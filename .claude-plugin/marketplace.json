@@ -1,12 +1,14 @@
 {
   "name": "jev-guard",
-  "owner": {"name": "Oleg Alshaev"},
+  "owner": {
+    "name": "Oleg Alshaev"
+  },
   "plugins": [
     {
       "name": "jev-guard",
       "source": "./",
-      "description": "Jev-backed permission classifier and prompt-injection sentinel for Claude Code",
-      "version": "0.2.0"
+      "description": "Jev-backed second-opinion guard for Claude Code: commands, edits, MCP calls, injection sentinel, audit log",
+      "version": "0.3.0"
     }
   ]
 }

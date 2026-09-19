@@ -1,10 +1,19 @@
 {
   "name": "jev-guard",
-  "version": "0.2.0",
-  "description": "A 3-cent bouncer for your agent's shell: Jev typed probabilities decide allow/deny for Bash and flag prompt injection in tool results",
-  "author": {"name": "Oleg Alshaev"},
+  "version": "0.3.0",
+  "description": "A second opinion on every command, edit and MCP call: Jev typed probabilities, a zero-key allowlist, a local audit log, and a prompt-injection sentinel for Claude Code",
+  "author": {
+    "name": "Oleg Alshaev"
+  },
   "homepage": "https://github.com/alsoleg89/jev-guard",
   "repository": "https://github.com/alsoleg89/jev-guard",
   "license": "MIT",
-  "keywords": ["hooks", "permissions", "security", "prompt-injection", "jev", "typesafe"]
+  "keywords": [
+    "hooks",
+    "permissions",
+    "security",
+    "prompt-injection",
+    "jev",
+    "typesafe"
+  ]
 }
