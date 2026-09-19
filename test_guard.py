@@ -103,7 +103,11 @@ class FakeJev(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-server = HTTPServer(("127.0.0.1", 0), FakeJev)
+class QuietServer(HTTPServer):
+    def handle_error(self, request, client_address):  # the timeout test hangs up early; that is expected
+        pass
+
+server = QuietServer(("127.0.0.1", 0), FakeJev)
 threading.Thread(target=server.serve_forever, daemon=True).start()
 home = tempfile.mkdtemp()
 env = {**os.environ, "JEV_GUARD_URL": f"http://127.0.0.1:{server.server_port}", "TYPESAFE_API_KEY": "test-key", "JEV_GUARD_HOME": home}

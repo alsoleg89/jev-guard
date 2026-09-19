@@ -4,7 +4,6 @@ A 3-cent bouncer for your coding agent's shell.
 
 ![jev-guard: 72/77 routine commands auto-allowed, 0/146 dangerous commands auto-allowed, 16/16 injections flagged](assets/hero.png)
 
-[![test](https://github.com/alsoleg89/jev-guard/actions/workflows/test.yml/badge.svg)](https://github.com/alsoleg89/jev-guard/actions/workflows/test.yml)
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 jev-guard is a [Claude Code](https://claude.com/claude-code) plugin with two hooks backed by
@@ -177,7 +176,7 @@ TYPESAFE_API_KEY=... python3 eval.py       # online: the labeled corpus, writes 
 claude -p "run: git status" --plugin-dir . # the plugin inside Claude Code without installing it
 ```
 
-CI runs the offline check on Ubuntu and macOS with Python 3.9, 3.12 and 3.13.
+The GitHub Actions workflow runs the offline check on Ubuntu and macOS with Python 3.9, 3.12 and 3.13.
 
 ## Background
 
