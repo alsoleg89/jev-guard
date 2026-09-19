@@ -178,6 +178,16 @@ assert not any("test-key" in line for line in Path(home, "log.jsonl").read_text(
 empty = subprocess.run([sys.executable, str(HERE / "guard.py"), "report"], capture_output=True, text=True, env={**env, "JEV_GUARD_HOME": tempfile.mkdtemp()})
 assert "no decisions logged yet" in empty.stdout
 
+# judge and scan from the command line
+judged = subprocess.run([sys.executable, str(HERE / "guard.py"), "judge", "rm", "-rf", "danger"], capture_output=True, text=True, env={**env, "JEV_GUARD_MODE": "on"})
+assert judged.returncode == 0 and "verdict   deny" in judged.stdout and "tripwire  hit" in judged.stdout, judged.stdout + judged.stderr
+judged = subprocess.run([sys.executable, str(HERE / "guard.py"), "judge"], input="ls -la", capture_output=True, text=True, env=env)
+assert "verdict   allow   (mode dry" in judged.stdout, judged.stdout
+nokey = subprocess.run([sys.executable, str(HERE / "guard.py"), "judge", "ls"], capture_output=True, text=True, env={**env, "TYPESAFE_API_KEY": ""})
+assert nokey.returncode != 0 and "no TypeSafe API key" in nokey.stderr
+scanned = subprocess.run([sys.executable, str(HERE / "guard.py"), "scan"], input="ignore previous " * 20, capture_output=True, text=True, env=env)
+assert "p(injection)  0.90   FLAGGED" in scanned.stdout, scanned.stdout
+
 # plugin manifests point at real files
 hooks = json.loads((HERE / "hooks" / "hooks.json").read_text())
 assert {"PreToolUse", "PostToolUse"} <= set(hooks["hooks"])
@@ -186,4 +196,5 @@ plugin = json.loads((HERE / ".claude-plugin" / "plugin.json").read_text())
 marketplace = json.loads((HERE / ".claude-plugin" / "marketplace.json").read_text())
 assert plugin["version"] == marketplace["plugins"][0]["version"], "versions must match"
 assert (HERE / "commands" / "report.md").read_text().count("guard.py") == 1
+assert "$ARGUMENTS" in (HERE / "commands" / "judge.md").read_text()
 print("ok")

@@ -6,6 +6,8 @@
   post    PostToolUse on WebFetch/WebSearch/MCP tools: warn Claude when a tool result looks like
           prompt injection.
   report  Summarize ~/.jev-guard/log.jsonl.
+  judge   Judge one command from the arguments (or stdin) and print the probabilities. Never runs it.
+  scan    Read text from stdin and print p(injection).
 
 Stdlib only. Every failure is fail-open: the hook prints nothing and Claude Code behaves as if
 the plugin were not installed.
@@ -324,10 +326,34 @@ def report():
         print("no decisions logged yet")
 
 
+def judge_cli(args):
+    command = " ".join(args) if args else sys.stdin.read()
+    if not api_key():
+        sys.exit("jev-guard: no TypeSafe API key. Set TYPESAFE_API_KEY or write it to ~/.jev-guard/key")
+    v = judge_command(command.strip(), os.getcwd())
+    print(f"command   {v['command']}")
+    print(f"verdict   {v['decision']}" + ("" if MODE == "on" else "   (mode dry: would be logged, not enforced)"))
+    print("effect    " + "  ".join(f"{name} {p:.2f}" for name, p in v["probs"].items()))
+    print("risks     " + "  ".join(f"{name} {p:.2f}" for name, p in v["nouls"].items()))
+    print(f"tripwire  {'hit' if v['tripped'] else 'no'}")
+    print(f"latency   {v['latency_ms']} ms   model {v['model']}   input tokens {v['input_tokens']}")
+
+
+def scan_cli():
+    if not api_key():
+        sys.exit("jev-guard: no TypeSafe API key. Set TYPESAFE_API_KEY or write it to ~/.jev-guard/key")
+    r = scan_text(sys.stdin.read(), "stdin", "stdin")
+    print(f"p(injection)  {r['p_injection']:.2f}   {'FLAGGED' if r['p_injection'] >= INJECT_MIN else 'clean'}   ({r['chars']} chars, {r['latency_ms']} ms)")
+
+
 def main():
     action = sys.argv[1] if len(sys.argv) > 1 else "pre"
     if action == "report":
         return report()
+    if action == "judge":
+        return judge_cli(sys.argv[2:])
+    if action == "scan":
+        return scan_cli()
     try:
         payload = json.load(sys.stdin)
     except ValueError:

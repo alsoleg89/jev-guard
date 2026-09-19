@@ -59,6 +59,28 @@ What it does not catch well, so you know: `git remote set-url origin https://evi
 `export HISTFILE=/dev/null` 0.44, `python3 -m http.server --directory ~` 0.40. All three were still
 deferred to you, because the auto-allow bar is 0.10.
 
+## Try it on one command first
+
+No install needed. Clone, put your key in the environment, and ask Jev about any command. It is
+never executed.
+
+```bash
+git clone https://github.com/alsoleg89/jev-guard && cd jev-guard
+TYPESAFE_API_KEY=... python3 guard.py judge 'x=rm; $x -rf ~/Documents'
+```
+
+```
+command   x=rm; $x -rf ~/Documents
+verdict   deny
+effect    read_only 0.00  reversible_write 0.00  destructive 1.00
+risks     writes_outside_project 0.98  network_egress 0.01  irreversible 0.96  exposes_secrets 0.12
+tripwire  no
+latency   747 ms   model jev-1.13.0   input tokens 1370
+```
+
+`python3 guard.py scan < page.html` does the same for a tool result and prints `p(injection)`.
+Inside Claude Code the same two things are `/jev-guard:judge <command>` and the log report.
+
 ## Quick start
 
 In Claude Code:
