@@ -1,0 +1,10 @@
+{
+  "name": "jev-guard",
+  "version": "0.1.0",
+  "description": "A 3-cent bouncer for your agent's shell: Jev typed probabilities decide allow/deny for Bash and flag prompt injection in tool results",
+  "author": {"name": "Oleg Alshaev"},
+  "homepage": "https://github.com/alsoleg89/jev-guard",
+  "repository": "https://github.com/alsoleg89/jev-guard",
+  "license": "MIT",
+  "keywords": ["hooks", "permissions", "security", "prompt-injection", "jev", "typesafe"]
+}
