@@ -13,6 +13,17 @@
   OpenAI-compatible model has not been measured.
 - Outbound exfiltration tier: `WebFetch` and `WebSearch` are now judged in `PreToolUse`, before the request leaves, not only scanned for injection after it returns. Deterministic tripwires, never an API call, so a web tool costs nothing and adds no latency even with a key configured. Denied: a secret-shaped value in the URL or query; one opaque 40-character run of `[A-Za-z0-9+/=_-]` in a path segment, parameter or search word (exempting a bare 40–64 digit hex hash and short words joined by `-`/`_`, so git commit URLs, YouTube ids, wiki titles and blog slugs pass); `file:`, `ftp:`, `gopher:`, `data:` and other non-`http(s)` schemes; `localhost`, `127.0.0.0/8`, `::1`, `169.254.169.254`, `.internal`, `.local`; raw IP hosts; ports other than 80 and 443; `user:pass@host`. Enforced in `guard` and `on`, logged only in `dry`. Off with `guard_web=off` / `JEV_BOUNCER_WEB=off`.
 - URLs are redacted before they appear in the log, the reason line or stderr.
+- `suggest`: allowlist proposals from your own audit log. Bash commands that were deferred and then ran
+  are grouped by shape (`npm run test`, `docker compose up`, `gh pr view`) and turned into anchored
+  `allow_patterns`, with counts and examples, for shapes seen at least `--min` times. Shapes that hit a
+  tripwire, that would match something denied or tripped in the log, or whose program dispatches on the
+  argument the shape strips (`python3 app.py`) are never proposed.
+- `suggest --apply '<pattern>'` writes only patterns from that list: into the repository's
+  `.jev-bouncer.json` in a trusted project, otherwise into `project_allow` in `~/.jev-bouncer/config.json`,
+  a per-project map that `settings()` merges into `allow_patterns` for that directory tree. An untrusted
+  repository still cannot widen your guard by editing its own config.
+- New `/jev-bouncer:suggest` command: it shows the proposals and asks which to apply; nothing is written
+  without you naming a pattern.
 
 ## 0.4.0
 
