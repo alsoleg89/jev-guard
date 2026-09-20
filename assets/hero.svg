@@ -6,8 +6,8 @@
   <g font-family="Comic Sans MS, Bradley Hand, cursive" fill="#1e1e1e">
     <rect x="70" y="48" width="312" height="52" rx="16" fill="#e5dbff" stroke="#7048e8" stroke-width="3" filter="url(#rough)"/>
     <text x="92" y="84" font-size="25" font-weight="700">CLAUDE CODE PLUGIN</text>
-    <text x="70" y="182" font-size="84" font-weight="700">jev-guard</text>
-    <path d="M72 202 C190 214, 330 192, 480 206" fill="none" stroke="#7048e8" stroke-width="8" stroke-linecap="round" filter="url(#rough)"/>
+    <text x="70" y="182" font-size="84" font-weight="700">jev-bouncer</text>
+    <path d="M72 202 C220 214, 400 192, 600 206" fill="none" stroke="#7048e8" stroke-width="8" stroke-linecap="round" filter="url(#rough)"/>
     <text x="72" y="254" font-size="32">A second opinion on every command, edit and MCP call.</text>
     <g filter="url(#rough)" stroke="#1e1e1e" stroke-width="4">
       <rect x="70" y="300" width="340" height="200" rx="22" fill="#ffe3e3"/>

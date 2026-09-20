@@ -1,13 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- Renamed from jev-guard to jev-bouncer; the old name belonged to an unrelated project. Everything that carried the name moved with it: the plugin and marketplace are `jev-bouncer`, commands are `/jev-bouncer:report`, `/jev-bouncer:calibrate`, `/jev-bouncer:judge`, `/jev-bouncer:trust`, the script is `bouncer.py`, settings are `JEV_BOUNCER_*`, the state directory is `~/.jev-bouncer` (key, config, log, cache), and project files are `.jev-bouncer.json` and `.jev-bouncer.md`. To migrate: `mv ~/.jev-guard ~/.jev-bouncer`, rename any project config files, and reinstall from `alsoleg89/jev-bouncer`. GitHub redirects the old repository URL.
+
 ## 0.3.0
 
 - Built-in read-only allowlist: `git status`, `ls`, `rg`, `docker ps`, `kubectl get` and about 60 more shapes are allowed locally with no API call and no key. One simple command only: no `;`, `&&`, `|`, redirects, subshells or newlines, and never a tripwire hit.
-- Trusted projects: test runners, builds and project scripts (`pytest`, `npm test`, `make test`, `./script`) only auto-run in projects you marked with `guard.py trust` or `/jev-guard:trust`, because they execute repository-controlled code. New Noul `runs_project_code` enforces this on the API path too.
+- Trusted projects: test runners, builds and project scripts (`pytest`, `npm test`, `make test`, `./script`) only auto-run in projects you marked with `bouncer.py trust` or `/jev-bouncer:trust`, because they execute repository-controlled code. New Noul `runs_project_code` enforces this on the API path too.
 - File edits are judged: `Write`, `Edit`, `MultiEdit`, `NotebookEdit`. A `curl | sh` planted in `src/app.py`, a reverse shell, an `exec(base64...)`, a `postinstall` hook, or a write to `~/.zshrc` no longer passes as a routine edit. Path tripwires for CI, hooks, manifests, agent config and paths outside the project.
 - MCP tool calls are judged: reads auto-allow, side effects (send, deploy, delete, pay, merge, permissions) never do.
-- Plain-language project policy: `.jev-guard.md` travels with every question.
-- Project config restriction: a repository's `.jev-guard.json` can set `policy` and `hold_patterns` only. Thresholds and `allow_patterns` come from your own `~/.jev-guard/config.json` or apply only in trusted projects, so a cloned repo cannot loosen your guard.
+- Plain-language project policy: `.jev-bouncer.md` travels with every question.
+- Project config restriction: a repository's `.jev-bouncer.json` can set `policy` and `hold_patterns` only. Thresholds and `allow_patterns` come from your own `~/.jev-bouncer/config.json` or apply only in trusted projects, so a cloned repo cannot loosen your guard.
 - Secret redaction before any request and before logging: private keys, `sk-`, `ghp_`, `AKIA`, `xox`, JWTs, bearer tokens, `password=`/`token=` values.
 - Verdict cache (default 6 h) keyed on the full question: repeats cost nothing and cannot be re-rolled.
 - Bash output scanning after network-y commands (`curl`, `git pull`, `npm install`, `gh pr view`), configurable to all or off.

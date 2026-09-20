@@ -1,14 +1,14 @@
 {
-  "name": "jev-guard",
+  "name": "jev-bouncer",
   "owner": {
     "name": "Oleg Alshaev"
   },
   "plugins": [
     {
-      "name": "jev-guard",
+      "name": "jev-bouncer",
       "source": "./",
       "description": "Jev-backed second-opinion guard for Claude Code: commands, edits, MCP calls, injection sentinel, audit log",
-      "version": "0.3.0"
+      "version": "0.4.0"
     }
   ]
 }

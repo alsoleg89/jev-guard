@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/guard.py\" pre",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bouncer.py\" pre",
             "timeout": 15
           }
         ]
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/guard.py\" post",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bouncer.py\" post",
             "timeout": 15
           }
         ]

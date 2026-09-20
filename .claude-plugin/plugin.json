@@ -1,12 +1,12 @@
 {
-  "name": "jev-guard",
-  "version": "0.3.0",
+  "name": "jev-bouncer",
+  "version": "0.4.0",
   "description": "A second opinion on every command, edit and MCP call: Jev typed probabilities, a zero-key allowlist, a local audit log, and a prompt-injection sentinel for Claude Code",
   "author": {
     "name": "Oleg Alshaev"
   },
-  "homepage": "https://github.com/alsoleg89/jev-guard",
-  "repository": "https://github.com/alsoleg89/jev-guard",
+  "homepage": "https://github.com/alsoleg89/jev-bouncer",
+  "repository": "https://github.com/alsoleg89/jev-bouncer",
   "license": "MIT",
   "keywords": [
     "hooks",

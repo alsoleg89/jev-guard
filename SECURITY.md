@@ -1,12 +1,12 @@
 # Security policy
 
-## What jev-guard is and is not
+## What jev-bouncer is and is not
 
-jev-guard is a convenience and audit layer, not a security boundary. It reduces permission prompts for
+jev-bouncer is a convenience and audit layer, not a security boundary. It reduces permission prompts for
 commands a model is confident are harmless, blocks a small set it is confident are destructive, and
 warns about tool results that look like prompt injection. A determined attacker who controls the text
 your agent reads can still find inputs the model scores wrong. Sandboxing, network egress control, and
-Claude Code's own deny rules are the boundary. Run jev-guard inside them, not instead of them.
+Claude Code's own deny rules are the boundary. Run jev-bouncer inside them, not instead of them.
 
 ## Threat model
 
@@ -14,10 +14,10 @@ Assumed attacker: someone who controls content your agent reads (a web page, a d
 issue, an MCP result) or a repository you cloned, and who wants the agent to run a destructive command,
 exfiltrate data, or persist on your machine. The agent itself is not assumed adversarial.
 
-What jev-guard aims to do against that attacker:
+What jev-bouncer aims to do against that attacker:
 
 - never auto-allow a command, edit, or MCP call that matches a tripwire, whatever the model says;
-- never let a cloned repository loosen your settings: a repo's `.jev-guard.json` can only tighten;
+- never let a cloned repository loosen your settings: a repo's `.jev-bouncer.json` can only tighten;
 - never auto-run repository-controlled code (tests, builds, scripts) unless you marked the project trusted;
 - never send your secrets to the API: token-shaped values are redacted before any request and before logging;
 - fail open, or fail to a prompt if you set `fail=ask`, never fail to an allow.
