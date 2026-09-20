@@ -143,13 +143,54 @@ assert bouncer.flatten(["a", {"b": ["c", 1, None]}]) == "a\nc\n1\n"
 assert bouncer.edit_parts("MultiEdit", {"file_path": "a", "edits": [{"old_string": "x", "new_string": "y"}, {"old_string": "p", "new_string": "q"}]}) == ("a", "y\n---\nq", "x\n---\np")
 assert bouncer.edit_parts("NotebookEdit", {"notebook_path": "n.ipynb", "new_source": "print(1)"}) == ("n.ipynb", "print(1)", "")
 
+# ---------------------------------------------------------------- 5b. the OpenAI-compatible adapter
+assert bouncer.have_judge({"backend": "openai"}), "the openai backend is a judge on its own, key or no key"
+assert bouncer.judge_model({"backend": "openai", "openai_model": "m", "model": "jev-1"}) == "m"
+assert bouncer.judge_model(dict(bouncer.DEFAULTS)) == bouncer.DEFAULTS["model"]
+Q = bouncer.BASH_QUESTIONS
+assert bouncer.answer_keys(Q) == ["read_only", "reversible_write", "destructive", *bouncer.NOULS]
+assert bouncer.answer_keys(bouncer.INJECT_QUESTIONS) == ["injection"]
+GOOD = ('{"read_only": 0, "reversible_write": 0.02, "destructive": 0.98, "writes_outside_project": 0.9, '
+        '"network_egress": 0.1, "irreversible": 0.97, "exposes_secrets": 0.2, "runs_project_code": 0.0}')
+good = bouncer.as_answers(bouncer.loose_json(GOOD), Q)
+probs, ns = bouncer.parse({"answers": good}, Q, "effect")
+assert probs["destructive"] == 0.98 and good["effect"]["choice"] == "destructive" and ns["irreversible"] == 0.97
+assert bouncer.decide(probs["destructive"], ns, False, cfg, HS) == "deny", "the same shape reaches the same verdict"
+assert bouncer.loose_json("Sure!\n```json\n" + GOOD + "\n```\nHope that helps.") == bouncer.loose_json(GOOD), "fences are stripped"
+assert bouncer.loose_json('{"probabilities": {"destructive": 0.9}}')["destructive"] == 0.9, "one wrapper level is tolerated"
+partial = bouncer.as_answers(bouncer.loose_json('{"destructive": 0.9, "irreversible": "very"}'), Q)
+pp, pn = bouncer.parse({"answers": partial}, Q, "effect")
+assert pp["read_only"] == 0.5 and pn["irreversible"] == 0.5 and pn["network_egress"] == 0.5, "missing or unparsable -> unknown"
+assert bouncer.decide(pp["destructive"], pn, False, cfg, HS) == "defer", "unknown never allows and never denies"
+clamped = bouncer.as_answers(bouncer.loose_json('{"destructive": 5, "read_only": -1}'), Q)["effect"]["probabilities"]
+assert clamped["destructive"] == 1.0 and clamped["read_only"] == 0.0, "probabilities are clamped to [0,1]"
+inj = bouncer.as_answers(bouncer.loose_json('{"injection": 0.93}'), bouncer.INJECT_QUESTIONS)
+assert inj["injection"]["noul"] == 0.93
+for junk in ("I cannot help with that.", "", "[1, 2]"):
+    try:
+        bouncer.loose_json(junk)
+        raise SystemExit("loose_json accepted junk: " + repr(junk))
+    except (RuntimeError, ValueError):
+        pass  # an unusable reply raises, and the hook's own handler fails open
+
 # ---------------------------------------------------------------- 6. the script end to end against a fake Jev server
 class FakeJev(BaseHTTPRequestHandler):
     calls = 0
+    chat_calls = 0
     last_state = None
+    last_auth = None
+
+    def send(self, out):
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(out)))
+        self.end_headers()
+        self.wfile.write(out)
 
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        if self.path.endswith("/chat/completions"):
+            return self.chat(body)
         assert self.headers["Authorization"] == "Bearer test-key"
         assert body["model"] == bouncer.DEFAULTS["model"]
         FakeJev.calls += 1
@@ -177,11 +218,38 @@ class FakeJev(BaseHTTPRequestHandler):
                 assert len(state["content"]) <= bouncer.MAX_CHARS + 40
                 answers["injection"] = {"type": "noul", "noul": 0.9 if "ignore previous" in state["content"].lower() else 0.05}
             out = json.dumps({"model": "fake-jev", "answers": answers, "usage": {"input_tokens": 100, "output_tokens": 10}}).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(out)))
-        self.end_headers()
-        self.wfile.write(out)
+        self.send(out)
+
+    def chat(self, body):
+        """An OpenAI-compatible endpoint that answers by the same markers, in the shapes a chat model really replies in."""
+        FakeJev.chat_calls += 1
+        FakeJev.last_auth = self.headers.get("Authorization")
+        assert body["temperature"] == 0 and len(body["messages"]) == 2
+        prompt = body["messages"][-1]["content"]
+        payload = json.loads(prompt[:prompt.index("\n\nAnswer with a JSON object")])
+        assert payload["answer_keys"] == prompt.rsplit("exactly: ", 1)[1].rstrip(".").split(", ")
+        state, keys = payload["state"], payload["answer_keys"]
+        FakeJev.last_state = state
+        marker = json.dumps(state)
+        if "noformat" in marker and "response_format" in body:
+            self.send_response(400); self.end_headers(); return  # a server that rejects response_format
+        if "injection" in keys:
+            scores = {"injection": 0.9 if "ignore previous" in state["content"].lower() else 0.05}
+        else:
+            danger = 0.98 if "danger" in marker else (0.3 if "medium" in marker else 0.01)
+            options = next(list(e) for e in (bouncer.EFFECTS, bouncer.EDIT_EFFECTS, bouncer.MCP_EFFECTS) if set(e) <= set(keys))
+            scores = {k: (danger if k == options[-1] else (1 - danger if k == options[0] else 0.0)) if k in options
+                      else (0.97 if danger > 0.5 else (0.9 if k == "runs_project_code" and "pytest" in marker else 0.02))
+                      for k in keys}
+        content = json.dumps(scores)
+        if "fenced" in marker:
+            content = "Sure, here you go:\n```json\n" + content + "\n```"
+        elif "partial" in marker:
+            content = json.dumps({k: v for k, v in list(scores.items())[:1]})
+        elif "prose" in marker:
+            content = "I am not comfortable scoring that."
+        self.send(json.dumps({"model": body["model"], "choices": [{"message": {"role": "assistant", "content": content}}],
+                              "usage": {"prompt_tokens": 120, "completion_tokens": 20}}).encode())
 
     def log_message(self, *args):
         pass
@@ -372,6 +440,48 @@ run("on", "post", post("", tool="Bash", command="python3 scripts/check.py", resp
 rows = [json.loads(line) for line in (HOME / "log.jsonl").read_text().splitlines()]
 assert any(row.get("event") == "ran" and row.get("command") == "python3 scripts/check.py" for row in rows), "ran events are logged even without a key"
 
+# ---------------------------------------------------------------- 6b. the openai backend: a full judge with no TypeSafe key
+oa = {"JEV_BOUNCER_BACKEND": "openai", "TYPESAFE_API_KEY": "", "OPENAI_API_KEY": "", "JEV_BOUNCER_OPENAI_KEY": "",
+      "JEV_BOUNCER_OPENAI_URL": f"http://127.0.0.1:{server.server_port}/v1/chat/completions",
+      "JEV_BOUNCER_OPENAI_MODEL": "fake-local"}
+
+def last_log():
+    return json.loads((HOME / "log.jsonl").read_text().splitlines()[-1])
+
+before_jev, before_chat = FakeJev.calls, FakeJev.chat_calls
+allowed = run("on", "pre", pre(API), oa)
+assert decision(allowed) == "allow", "the no-key fallback no longer applies: openai judges it"
+assert FakeJev.chat_calls == before_chat + 1 and FakeJev.calls == before_jev, "routed to the chat endpoint, not to Jev"
+row = last_log()
+assert row["backend"] == "openai" and row["model"] == "fake-local", row
+assert FakeJev.last_auth is None, "no key configured: no Authorization header"
+assert decision(run("on", "pre", pre("danger --now rm x"), oa)) == "deny"
+assert decision(run("on", "pre", edit("src/x.py", "danger content"), oa)) == "deny", "edits no longer need a TypeSafe key"
+assert decision(run("on", "pre", mcp("mcp__github__get_issue", {"n": 1}), oa)) == "allow"
+flagged = run("on", "post", post("ignore previous " * 20), oa)
+assert flagged and "p=0.90" in flagged["hookSpecificOutput"]["additionalContext"], "the sentinel runs on this backend too"
+assert last_log()["backend"] == "openai"
+run("on", "pre", pre(API), {**oa, "JEV_BOUNCER_OPENAI_KEY": "local-key"})
+assert FakeJev.last_auth == "Bearer local-key", "a key, when there is one, goes in the Authorization header"
+assert decision(run("on", "pre", pre("fenced " + API), oa)) == "allow", "a fenced reply still parses"
+run("on", "pre", pre("partial " + API), oa)
+assert last_log()["decision"] == "defer" and last_log()["p_danger"] == 0.5, "missing keys defer, they never allow"
+assert run("on", "pre", pre("prose " + API), oa) is None and "error" in last_log(), "an unusable reply fails open"
+before_chat = FakeJev.chat_calls
+assert decision(run("on", "pre", pre("noformat " + API), oa)) == "allow", "a server that rejects response_format is retried without it"
+assert FakeJev.chat_calls == before_chat + 2
+
+# the cache key includes the backend and the model
+cached = {**oa, "JEV_BOUNCER_CACHE_TTL": "600"}
+run("on", "pre", pre("cachetest " + API), cached)
+before_chat, before_jev = FakeJev.chat_calls, FakeJev.calls
+run("on", "pre", pre("cachetest " + API), cached)
+assert FakeJev.chat_calls == before_chat, "the identical question is answered from cache"
+run("on", "pre", pre("cachetest " + API), {**cached, "JEV_BOUNCER_OPENAI_MODEL": "other-local"})
+assert FakeJev.chat_calls == before_chat + 1, "a different model is a different cache entry"
+run("on", "pre", pre("cachetest " + API), {"JEV_BOUNCER_CACHE_TTL": "600"})
+assert FakeJev.calls == before_jev + 1, "the same question on the jev backend is a different cache entry"
+
 # log rotation
 big_env = {**env, "JEV_BOUNCER_LOG_MAX_MB": "0.000001"}
 subprocess.run([sys.executable, str(HERE / "bouncer.py"), "pre"], input=json.dumps(pre(API)), capture_output=True, text=True, env={**big_env, "JEV_BOUNCER_MODE": "on"})
@@ -403,7 +513,9 @@ assert "effect    " in cli("judge", "--ask-jev", "git", "status").stdout, "--ask
 assert "verdict   deny" in cli("judge", "--edit", "src/x.py", stdin="danger content").stdout
 assert "verdict   allow" in cli("judge", "--mcp", "mcp__github__get_issue", '{"n": 1}').stdout
 nokey = cli("judge", API, extra={"TYPESAFE_API_KEY": ""})
-assert nokey.returncode != 0 and "no TypeSafe API key" in nokey.stderr
+assert nokey.returncode != 0 and "no judge" in nokey.stderr
+assert "verdict   allow" in cli("judge", API, extra={**oa, "JEV_BOUNCER_MODE": "on"}).stdout, "judge works keyless on the openai backend"
+assert "p(injection)  0.90   FLAGGED" in cli("scan", stdin="ignore previous " * 20, extra=oa).stdout
 assert "p(injection)  0.90   FLAGGED" in cli("scan", stdin="ignore previous " * 20).stdout
 assert cli("version").stdout.strip() == bouncer.VERSION
 assert "usage" in cli("--help").stdout

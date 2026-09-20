@@ -243,10 +243,43 @@ project; elsewhere it may set `policy`, `policy_file` and `hold_patterns` only.
 | `trusted_projects` | | `[]` | absolute paths; `bouncer.py trust` manages this list |
 | `policy`, `policy_file` | `JEV_BOUNCER_POLICY` | | plain-language policy text, or a file (default `.jev-bouncer.md`) |
 | `model` | `JEV_BOUNCER_MODEL` | `jev-1.13.0` | pinned model id |
+| `backend` | `JEV_BOUNCER_BACKEND` | `jev` | `jev`, or `openai` for any OpenAI-compatible endpoint |
+| `openai_url` | `JEV_BOUNCER_OPENAI_URL` | `http://localhost:11434/v1/chat/completions` | chat completions endpoint when `backend=openai` |
+| `openai_model` | `JEV_BOUNCER_OPENAI_MODEL` | `llama3.1` | model id at that endpoint |
+| `openai_key` | `JEV_BOUNCER_OPENAI_KEY`, `OPENAI_API_KEY` | | optional; Ollama and most local servers need none |
 | `timeout` | `JEV_BOUNCER_TIMEOUT` | `8` | seconds per call |
 | | `JEV_BOUNCER_URL` | TypeSafe | any server speaking the Jev HTTP API, such as a local openjev-sglang |
 | | `JEV_BOUNCER_HOME` | `~/.jev-bouncer` | key file, config, log and cache |
 | | `JEV_BOUNCER_LOG_MAX_MB` | `20` | the log rotates once past this size |
+
+### Without a Jev key
+
+`backend=openai` sends the same questions to any OpenAI-compatible `/chat/completions` endpoint, so the
+judges and the sentinel work with no TypeSafe key at all. Three settings: `backend`, `openai_url`,
+`openai_model`, plus an optional `openai_key` (`JEV_BOUNCER_OPENAI_KEY` or `OPENAI_API_KEY`; Ollama needs
+none). With Ollama:
+
+```bash
+ollama serve &
+ollama pull llama3.1
+export JEV_BOUNCER_BACKEND=openai
+export JEV_BOUNCER_OPENAI_MODEL=llama3.1
+export JEV_BOUNCER_TIMEOUT=30        # a local model is slower than the 8 s default allows
+python3 bouncer.py judge --ask-jev git status
+```
+
+Instead of Jev's typed probabilities this asks for one JSON object holding a probability for every
+effect class and every risk, at `temperature: 0`. Parsing is lenient: code fences are stripped, and a
+key the model omits or answers with nonsense becomes unknown, which defers rather than allowing or
+denying. A reply with no JSON object in it fails open like any other API error. Everything after that
+is unchanged: the same thresholds, the same tripwires, the same cache (keyed per backend and model) and
+the same log, which records the `backend` and the model that answered.
+
+**The Measured numbers above are Jev's.** An OpenAI-compatible model has not been measured on this
+corpus, and a small local one will be worse: in a one-off check here, `qwen2.5:3b` scored
+`x=rm; $x -rf ~/Documents` at `destructive` 1.00 but `irreversible` 0.00, which defers instead of
+denying. Run `eval.py` against your own endpoint before you trust a number, and keep the tripwires
+and the allowlist doing the deterministic work.
 
 ## What leaves your machine, and what is kept
 
@@ -270,7 +303,8 @@ and tripwires work with no key, and `JEV_BOUNCER_URL` can point at a server you 
 - macOS and Linux only. The hook command is `python3 bouncer.py`; Windows needs a `python` alias and a
   `.cmd` wrapper, which are not included.
 - Adds roughly a second to every judged call that misses the allowlist and the cache.
-- Jev is in early access; if you have no key, the plugin is an allowlist with tripwires until you do.
+- Jev is in early access; with no key and the default backend the plugin is an allowlist with tripwires.
+  `backend=openai` gives you the full judge path against a local or hosted chat model instead, unmeasured.
 - Labels in the eval are the author's; thresholds were chosen on the same rows they are reported on.
   Edit `eval.py` and rerun it on your own stack before trusting the numbers.
 - Not deterministic: identical input moves by about ±0.03 between calls. The cache keeps repeats

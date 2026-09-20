@@ -45,6 +45,10 @@ DEFAULTS = {
     "mode": "dry",             # dry: log only | guard: enforce deny only, never widen permissions | on: allow and deny
     "fail": "open",            # open: silent on error | ask: force a permission prompt on error
     "model": "jev-1.13.0",
+    "backend": "jev",          # jev: TypeSafe's typed API | openai: any OpenAI-compatible /chat/completions endpoint
+    "openai_url": "http://localhost:11434/v1/chat/completions",
+    "openai_model": "llama3.1",
+    "openai_key": "",          # optional: Ollama and most local servers need none
     "timeout": 8.0,
     "allow_max": 0.10,         # auto-allow needs p(dangerous) below this
     "noul_max": 0.40,          # ...and every risk probability below this
@@ -73,6 +77,8 @@ ENV_KEYS = {
     "JEV_BOUNCER_INJECT_ACTION": "inject_action", "JEV_BOUNCER_SCAN": "scan", "JEV_BOUNCER_SCAN_BASH": "scan_bash",
     "JEV_BOUNCER_CACHE_TTL": "cache_ttl", "JEV_BOUNCER_EDITS": "guard_edits", "JEV_BOUNCER_MCP": "guard_mcp",
     "JEV_BOUNCER_POLICY": "policy", "JEV_BOUNCER_SCAN_MIN_CHARS": "scan_min_chars", "JEV_BOUNCER_LOCAL_ALLOW": "local_allow",
+    "JEV_BOUNCER_BACKEND": "backend", "JEV_BOUNCER_OPENAI_URL": "openai_url",
+    "JEV_BOUNCER_OPENAI_MODEL": "openai_model", "JEV_BOUNCER_OPENAI_KEY": "openai_key",
 }
 EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
@@ -441,6 +447,15 @@ def api_key():
     return key or None
 
 
+def have_judge(cfg):
+    """Is any judge reachable? An OpenAI-compatible endpoint is one even with no TypeSafe key."""
+    return cfg.get("backend") == "openai" or bool(api_key())
+
+
+def judge_model(cfg):
+    return cfg["openai_model"] if cfg.get("backend") == "openai" else cfg["model"]
+
+
 def ask_jev(state, questions, cfg):
     body = json.dumps({"model": cfg["model"], "state": state, "questions": questions}, ensure_ascii=False).encode()
     request = urllib.request.Request(
@@ -457,19 +472,112 @@ def ask_jev(state, questions, cfg):
     return raw, (time.monotonic() - started) * 1000
 
 
+OPENAI_SYSTEM = (
+    "You are a risk classifier for a coding agent's guard rail. `state` is the action the agent wants to take; "
+    "`questions` gives the criteria behind each label. Reply with ONE JSON object and nothing else: every key in "
+    "`answer_keys` mapped to your probability in [0,1] that this label's criteria apply to this action. The options "
+    "of a choice question are alternatives, so spread the probability across them. No prose, no extra keys."
+)
+FENCED = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
+
+
+def answer_keys(questions):
+    """One flat probability per choice option and per noul: the shape a chat model is asked for."""
+    keys = []
+    for name, question in questions.items():
+        keys += list(question["criteria"]) if question["type"] == "choice" else [name]
+    return keys
+
+
+def loose_json(text):
+    """Chat models wrap JSON in fences and apologies. Take the outermost object; no object at all is an error."""
+    fenced = FENCED.search(text)
+    if fenced:
+        text = fenced.group(1)
+    start, end = text.find("{"), text.rfind("}")
+    if start < 0 or end < start:
+        raise RuntimeError("no JSON object in the model reply: {!r}".format(text[:200]))
+    obj = json.loads(text[start:end + 1])
+    flat = {k: v for k, v in obj.items() if not isinstance(v, dict)}
+    for value in obj.values():  # tolerate one wrapper level, e.g. {"probabilities": {...}}
+        if isinstance(value, dict):
+            flat.update({k: v for k, v in value.items() if not isinstance(v, dict)})
+    return flat
+
+
+def as_answers(scores, questions):
+    """Rebuild Jev's answer shape, so parse, decide, the cache and the log stay unchanged. A key the model
+    omitted or answered with nonsense becomes 0.5: unknown, which is above allow_max and below deny_min."""
+    def probability(name):
+        try:
+            return min(1.0, max(0.0, float(scores[name])))
+        except (KeyError, TypeError, ValueError):
+            return 0.5
+    answers = {}
+    for name, question in questions.items():
+        if question["type"] == "choice":
+            probs = {option: probability(option) for option in question["criteria"]}
+            top = max(probs, key=lambda option: probs[option])
+            answers[name] = {"type": "choice", "choice": top, "confidence": probs[top], "probabilities": probs}
+        else:
+            answers[name] = {"type": "noul", "noul": probability(name)}
+    return answers
+
+
+def ask_openai(state, questions, cfg):
+    """The same questions against any OpenAI-compatible /chat/completions endpoint: one call, one JSON object back."""
+    keys = answer_keys(questions)
+    body = {
+        "model": cfg["openai_model"], "temperature": 0, "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": OPENAI_SYSTEM},
+            {"role": "user", "content": json.dumps({"state": state, "questions": questions, "answer_keys": keys},
+                                                   ensure_ascii=False)
+                                        + "\n\nAnswer with a JSON object whose keys are exactly: " + ", ".join(keys) + "."},
+        ],
+    }
+    headers = {"Content-Type": "application/json", "Accept": "application/json", "User-Agent": f"jev-bouncer/{VERSION}"}
+    key = cfg.get("openai_key") or os.getenv("OPENAI_API_KEY")
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    started = time.monotonic()
+    raw = None
+    for attempt in (0, 1):
+        request = urllib.request.Request(cfg["openai_url"], data=json.dumps(body, ensure_ascii=False).encode(),
+                                         method="POST", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=cfg["timeout"]) as response:
+                raw = json.load(response)
+            break
+        except urllib.error.HTTPError as error:
+            if attempt == 0 and error.code == 400 and body.pop("response_format", None):
+                continue  # the server does not know response_format; ask again without it
+            raise RuntimeError(f"HTTP {error.code}: {error.read().decode(errors='replace')[:300]}") from error
+    content = raw["choices"][0]["message"]["content"]
+    return ({"model": raw.get("model") or cfg["openai_model"], "answers": as_answers(loose_json(content), questions),
+             "usage": {"input_tokens": raw.get("usage", {}).get("prompt_tokens", 0)}},
+            (time.monotonic() - started) * 1000)
+
+
+def ask_model(state, questions, cfg):
+    """The one place a backend is chosen; everything downstream sees Jev's answer shape."""
+    return ask_openai(state, questions, cfg) if cfg.get("backend") == "openai" else ask_jev(state, questions, cfg)
+
+
 def cached_ask(state, questions, cfg):
     """Identical questions within cache_ttl are answered from ~/.jev-bouncer/cache without an API call."""
     if cfg["cache_ttl"] <= 0:
-        raw, latency = ask_jev(state, questions, cfg)
+        raw, latency = ask_model(state, questions, cfg)
         return raw, latency, False
-    key = hashlib.sha256(json.dumps({"model": cfg["model"], "state": state, "questions": questions}, sort_keys=True).encode()).hexdigest()
+    key = hashlib.sha256(json.dumps({"backend": cfg.get("backend", "jev"), "model": judge_model(cfg),
+                                     "state": state, "questions": questions}, sort_keys=True).encode()).hexdigest()
     entry = CACHE / key
     try:
         if time.time() - entry.stat().st_mtime < cfg["cache_ttl"]:
             return json.loads(entry.read_text()), 0.0, True
     except (OSError, ValueError):
         pass
-    raw, latency = ask_jev(state, questions, cfg)
+    raw, latency = ask_model(state, questions, cfg)
     try:
         CACHE.mkdir(parents=True, exist_ok=True)
         os.chmod(CACHE, 0o700)
@@ -530,7 +638,7 @@ def judge_command(command, cwd="", description="", cfg=None, local=True):
     if source:
         return {"command": command[:500], "cwd": cwd, "p_danger": 0.0, "probs": {}, "nouls": {}, "tripped": False,
                 "decision": "allow", "latency_ms": 0, "model": source, "input_tokens": 0, "cached": False, "fast": True}
-    if not api_key():
+    if not have_judge(cfg):
         return None
     state = with_policy({"policy": BASH_POLICY, "cwd": cwd, "command": command[:MAX_CHARS],
                          "agent_description": redact(description or "")[:300]}, cfg)
@@ -647,15 +755,16 @@ def pre(payload, cfg):
     tool = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") or {}
     cwd = payload.get("cwd", "")
-    common = {"event": "pre", "tool": tool, "session_id": payload.get("session_id", ""), "project": os.path.basename(cwd), "mode": cfg["mode"]}
+    common = {"event": "pre", "tool": tool, "session_id": payload.get("session_id", ""), "project": os.path.basename(cwd),
+              "mode": cfg["mode"], "backend": cfg.get("backend", "jev")}
     if tool == "Bash":
         command = tool_input.get("command") or ""
         if not command.strip():
             return None
         verdict = judge_command(command, cwd, tool_input.get("description"), cfg)
-    elif tool in EDIT_TOOLS and cfg["guard_edits"] != "off" and api_key():
+    elif tool in EDIT_TOOLS and cfg["guard_edits"] != "off" and have_judge(cfg):
         verdict = judge_edit(tool, tool_input, cwd, cfg)
-    elif tool.startswith("mcp__") and cfg["guard_mcp"] != "off" and api_key():
+    elif tool.startswith("mcp__") and cfg["guard_mcp"] != "off" and have_judge(cfg):
         verdict = judge_mcp(tool, tool_input, cwd, cfg)
     else:
         return None
@@ -671,7 +780,8 @@ def pre(payload, cfg):
 def post(payload, cfg):
     tool = payload.get("tool_name") or ""
     tool_input = payload.get("tool_input") or {}
-    common = {"tool": tool, "session_id": payload.get("session_id", ""), "project": os.path.basename(payload.get("cwd", ""))}
+    common = {"tool": tool, "session_id": payload.get("session_id", ""), "project": os.path.basename(payload.get("cwd", "")),
+              "backend": cfg.get("backend", "jev")}
     text = flatten(payload.get("tool_response"))
     if tool == "Bash":
         command = tool_input.get("command") or ""
@@ -683,7 +793,7 @@ def post(payload, cfg):
         if cfg["scan"] == "off":
             return None
         source = tool_input.get("url") or tool_input.get("query") or tool_input.get("file_path") or json.dumps(tool_input)
-    if len(text) < cfg["scan_min_chars"] or not api_key():
+    if len(text) < cfg["scan_min_chars"] or not have_judge(cfg):
         return None
     result = scan_text(text, tool, source, cfg)
     log({"event": "post", **common, **result})
@@ -846,8 +956,8 @@ def print_verdict(v, cfg, subject):
 
 def judge_cli(args):
     cfg = settings(os.getcwd())
-    if not api_key() and (args.edit or args.mcp or not local_verdict(redact(" ".join(args.command)), cfg)):
-        sys.exit("jev-bouncer: no TypeSafe API key. Set TYPESAFE_API_KEY or write it to ~/.jev-bouncer/key")
+    if not have_judge(cfg) and (args.edit or args.mcp or not local_verdict(redact(" ".join(args.command)), cfg)):
+        sys.exit("jev-bouncer: no judge. Set TYPESAFE_API_KEY, write it to ~/.jev-bouncer/key, or set JEV_BOUNCER_BACKEND=openai")
     if args.edit:
         content = sys.stdin.read()
         v = judge_edit("Write", {"file_path": args.edit, "content": content}, os.getcwd(), cfg)
@@ -864,9 +974,9 @@ def judge_cli(args):
 
 
 def scan_cli():
-    if not api_key():
-        sys.exit("jev-bouncer: no TypeSafe API key. Set TYPESAFE_API_KEY or write it to ~/.jev-bouncer/key")
     cfg = settings()
+    if not have_judge(cfg):
+        sys.exit("jev-bouncer: no judge. Set TYPESAFE_API_KEY, write it to ~/.jev-bouncer/key, or set JEV_BOUNCER_BACKEND=openai")
     r = scan_text(sys.stdin.read(), "stdin", "stdin", cfg)
     print(f"p(injection)  {r['p_injection']:.2f}   {'FLAGGED' if r['p_injection'] >= cfg['inject_min'] else 'clean'}   ({r['chars']} chars, {r['latency_ms']} ms)")
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+- New `backend` setting. `backend=openai` sends the same judge and sentinel questions to any
+  OpenAI-compatible `/chat/completions` endpoint instead of Jev, so the full path works with no
+  TypeSafe key: `openai_url` (default `http://localhost:11434/v1/chat/completions`), `openai_model`
+  (default `llama3.1`), `openai_key` (optional; `JEV_BOUNCER_OPENAI_KEY` or `OPENAI_API_KEY`).
+  One chat call asks for a strict JSON object of probabilities, parsed leniently: code fences are
+  stripped, a key the model omits or garbles becomes unknown and defers, and a reply with no JSON
+  object at all fails open as any other API error does. The cache key includes the backend and the
+  model, and log rows carry `backend`. The Measured numbers in the README are Jev's; an
+  OpenAI-compatible model has not been measured.
+
 ## 0.4.0
 
 - Renamed from jev-guard to jev-bouncer; the old name belonged to an unrelated project. Everything that carried the name moved with it: the plugin and marketplace are `jev-bouncer`, commands are `/jev-bouncer:report`, `/jev-bouncer:calibrate`, `/jev-bouncer:judge`, `/jev-bouncer:trust`, the script is `bouncer.py`, settings are `JEV_BOUNCER_*`, the state directory is `~/.jev-bouncer` (key, config, log, cache), and project files are `.jev-bouncer.json` and `.jev-bouncer.md`. To migrate: `mv ~/.jev-guard ~/.jev-bouncer`, rename any project config files, and reinstall from `alsoleg89/jev-bouncer`. GitHub redirects the old repository URL.
