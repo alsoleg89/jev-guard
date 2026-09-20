@@ -1,0 +1,32 @@
+{
+  "hooks": {
+    "BeforeTool": [
+      {
+        "matcher": "run_shell_command|write_file|replace|^mcp_",
+        "hooks": [
+          {
+            "type": "command",
+            "name": "jev-bouncer",
+            "command": "python3 /ABSOLUTE/PATH/TO/jev-bouncer/bouncer.py gemini BeforeTool",
+            "timeout": 15000,
+            "description": "Judge shell commands, file writes and MCP calls with Jev before they run."
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": "run_shell_command|web_fetch|google_web_search|^mcp_",
+        "hooks": [
+          {
+            "type": "command",
+            "name": "jev-bouncer-scan",
+            "command": "python3 /ABSOLUTE/PATH/TO/jev-bouncer/bouncer.py gemini AfterTool",
+            "timeout": 15000,
+            "description": "Scan tool results for prompt injection."
+          }
+        ]
+      }
+    ]
+  }
+}

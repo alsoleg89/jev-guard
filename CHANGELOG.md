@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- Other agents: `bouncer.py cursor <event>` and `bouncer.py gemini <event>` translate Cursor's and
+  Gemini CLI's hook protocols onto the same judges, tripwires, settings, cache and log. No second
+  copy of any rule; the adapters only rename fields and render the verdict in the other agent's
+  dialect. Config snippets in `adapters/`, protocols and caveats in `docs/adapters.md`.
+- Log rows judged through an adapter carry an `agent` field (`cursor`, `gemini`). Claude Code rows
+  are byte-for-byte unchanged and read as `claude` by default.
+- Both protocols were taken from the vendors' own documentation and neither adapter has been run
+  inside Cursor or Gemini CLI. Known gaps, all written down in `docs/adapters.md`: Cursor does not
+  document its file-edit tool arguments (the adapter matches on payload shape, not tool names), a
+  Cursor permission hook that answers off-schema blocks the action so `defer` becomes `ask` there,
+  and Gemini has no `ask` at all so `defer` and `fail: ask` are silence.
+
 ## 0.4.0
 
 - Renamed from jev-guard to jev-bouncer; the old name belonged to an unrelated project. Everything that carried the name moved with it: the plugin and marketplace are `jev-bouncer`, commands are `/jev-bouncer:report`, `/jev-bouncer:calibrate`, `/jev-bouncer:judge`, `/jev-bouncer:trust`, the script is `bouncer.py`, settings are `JEV_BOUNCER_*`, the state directory is `~/.jev-bouncer` (key, config, log, cache), and project files are `.jev-bouncer.json` and `.jev-bouncer.md`. To migrate: `mv ~/.jev-guard ~/.jev-bouncer`, rename any project config files, and reinstall from `alsoleg89/jev-bouncer`. GitHub redirects the old repository URL.
