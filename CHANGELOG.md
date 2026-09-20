@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+- `suggest`: allowlist proposals from your own audit log. Bash commands that were deferred and then ran
+  are grouped by shape (`npm run test`, `docker compose up`, `gh pr view`) and turned into anchored
+  `allow_patterns`, with counts and examples, for shapes seen at least `--min` times. Shapes that hit a
+  tripwire, that would match something denied or tripped in the log, or whose program dispatches on the
+  argument the shape strips (`python3 app.py`) are never proposed.
+- `suggest --apply '<pattern>'` writes only patterns from that list: into the repository's
+  `.jev-bouncer.json` in a trusted project, otherwise into `project_allow` in `~/.jev-bouncer/config.json`,
+  a per-project map that `settings()` merges into `allow_patterns` for that directory tree. An untrusted
+  repository still cannot widen your guard by editing its own config.
+- New `/jev-bouncer:suggest` command: it shows the proposals and asks which to apply; nothing is written
+  without you naming a pattern.
+
 ## 0.4.0
 
 - Renamed from jev-guard to jev-bouncer; the old name belonged to an unrelated project. Everything that carried the name moved with it: the plugin and marketplace are `jev-bouncer`, commands are `/jev-bouncer:report`, `/jev-bouncer:calibrate`, `/jev-bouncer:judge`, `/jev-bouncer:trust`, the script is `bouncer.py`, settings are `JEV_BOUNCER_*`, the state directory is `~/.jev-bouncer` (key, config, log, cache), and project files are `.jev-bouncer.json` and `.jev-bouncer.md`. To migrate: `mv ~/.jev-guard ~/.jev-bouncer`, rename any project config files, and reinstall from `alsoleg89/jev-bouncer`. GitHub redirects the old repository URL.

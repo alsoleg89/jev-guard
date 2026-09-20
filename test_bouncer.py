@@ -421,6 +421,97 @@ assert "test-key" not in text and "abcdefghijklmnopqrstuvwxyz0123456789" not in 
 assert all(row.get("session_id") == "s1" for row in rows if row.get("event") in ("pre", "ran"))
 assert any(row.get("model") == "local_allowlist" for row in rows)
 
+# ---------------------------------------------------------------- 7. suggest: allow_patterns from the log
+assert bouncer.shape("npm run test -- --watch") == "npm run test"
+assert bouncer.shape("docker compose up -d") == "docker compose up"
+assert bouncer.shape("gh pr view 12 --json title") == "gh pr view"
+assert bouncer.shape("pytest -q") == "pytest"
+assert bouncer.shape("git log --oneline -20") == "git log"
+assert bouncer.shape("python3 scripts/check.py") is None, "a program that dispatches on its argument is not a shape"
+assert bouncer.shape("./deploy.sh --prod") is None and bouncer.shape("") is None
+
+SHOME = Path(tempfile.mkdtemp())
+SPROJ = str(Path(tempfile.mkdtemp()) / "shop")
+os.makedirs(SPROJ)
+NOW = time.time()
+srows = []
+
+def logged(command, decision="defer", session="s1", project=os.path.basename(SPROJ), ts=None, tripped=False, ran=True):
+    """one PreToolUse verdict, plus the PostToolUse row that proves the command then ran"""
+    srows.append({"ts": ts or NOW, "event": "pre", "tool": "Bash", "session_id": session, "project": project,
+                  "cwd": SPROJ, "command": command, "decision": decision, "tripped": tripped, "p_danger": 0.3})
+    if ran:
+        srows.append({"ts": ts or NOW, "event": "ran", "tool": "Bash", "session_id": session, "project": project, "command": command})
+
+logged("npm run test")
+logged("npm run test -- --watch", session="s2")
+logged("npm run lint")                                            # seen once: below --min 2
+logged("docker compose up -d")
+logged("docker compose up", session="s2")
+logged("make build")                                              # killed by the denied sibling below
+logged("make build -j4", session="s2")
+logged("make build-prod --push", decision="deny")
+logged("sudo systemctl restart api", tripped=True)                # you approved it; a tripwire shape is never suggested
+logged("sudo systemctl restart web", tripped=True, session="s2")
+logged("terraform apply -auto-approve", ran=False)                # deferred and never run: not a prompt you answered
+logged("python3 scripts/check.py")                                # no shape: ^python3 would auto-allow anything
+logged("python3 scripts/seed.py", session="s2")
+logged("gh pr view 12", ts=NOW - 100 * 3600)
+logged("gh pr view 13", ts=NOW - 100 * 3600, session="s2")
+logged("pytest -q", project="other")                              # another project
+logged("pytest -q -x", project="other", session="s2")
+(SHOME / "log.jsonl").write_text("".join(json.dumps(r) + "\n" for r in srows))
+
+def scli(*args, extra=None):
+    return cli(*args, extra={"JEV_BOUNCER_HOME": str(SHOME), **(extra or {})})
+
+sug = scli("suggest", "--project", SPROJ)
+assert sug.returncode == 0, sug.stderr
+for needle in (r"^npm run test\b", r"^docker compose up\b", r"^gh pr view\b", "e.g. npm run test -- --watch", "2x"):
+    assert needle in sug.stdout, needle + "\n" + sug.stdout
+for banned in ("make build", "sudo", "terraform", "python3 scripts", "npm run lint", "pytest"):
+    assert banned not in sug.stdout, banned + " must not be suggested\n" + sug.stdout
+assert r"^gh pr view\b" not in scli("suggest", "--project", SPROJ, "--since", "1").stdout, "--since drops old rows"
+assert "nothing to suggest" in scli("suggest", "--project", SPROJ, "--min", "3").stdout, "--min raises the bar"
+
+sjson = json.loads(scli("suggest", "--project", SPROJ, "--json").stdout)
+assert [s["pattern"] for s in sjson["suggestions"]] == [r"^docker compose up\b", r"^gh pr view\b", r"^npm run test\b"]
+assert all(s["count"] == 2 and len(s["examples"]) == 2 for s in sjson["suggestions"])
+assert sjson["deferred_then_approved"] == 11 and sjson["trusted"] is False and sjson["project"] == SPROJ
+
+bad = scli("suggest", "--project", SPROJ, "--apply", "^.*")
+assert bad.returncode != 0 and "not among the current suggestions" in bad.stderr, "only patterns from the report can be written"
+
+# untrusted project: the pattern goes to the user config, because a repo file may not widen allow_patterns
+ap = scli("suggest", "--project", SPROJ, "--apply", r"^npm run test\b")
+assert ap.returncode == 0 and "not trusted" in ap.stdout, ap.stdout + ap.stderr
+assert json.loads((SHOME / "config.json").read_text())["project_allow"][SPROJ] == [r"^npm run test\b"]
+assert not (Path(SPROJ) / ".jev-bouncer.json").exists(), "an untrusted project's own config is not written"
+bouncer.HOME = SHOME
+smerged = bouncer.settings(SPROJ)
+assert bouncer.local_verdict("npm run test -- --watch", smerged) == "allow_patterns", "settings() merges project_allow"
+assert bouncer.local_verdict("npm run test && rm -rf dist", smerged) is None, "tripwires still beat an applied pattern"
+assert bouncer.local_verdict("npm run test", bouncer.settings(tempfile.mkdtemp())) is None, "...only in that project"
+bouncer.HOME = HOME
+calls_before = FakeJev.calls
+allowed = run("on", "pre", pre("npm run test -- --watch", cwd=SPROJ), {"JEV_BOUNCER_HOME": str(SHOME)})
+assert decision(allowed) == "allow" and "allow_patterns" in reason(allowed) and FakeJev.calls == calls_before
+
+# trusted project: the pattern travels with the repository instead
+assert "trusted: " + SPROJ in scli("trust", SPROJ).stdout
+ap2 = scli("suggest", "--project", SPROJ, "--apply", r"^docker compose up\b")
+assert "(project trusted)" in ap2.stdout, ap2.stdout + ap2.stderr
+project_cfg = Path(SPROJ) / ".jev-bouncer.json"
+assert json.loads(project_cfg.read_text())["allow_patterns"] == [r"^docker compose up\b"]
+scli("suggest", "--project", SPROJ, "--apply", r"^docker compose up\b")
+assert json.loads(project_cfg.read_text())["allow_patterns"] == [r"^docker compose up\b"], "re-applying does not duplicate"
+scli("suggest", "--project", SPROJ, "--apply")  # no names: every suggestion
+applied = json.loads(project_cfg.read_text())["allow_patterns"]
+assert r"^npm run test\b" in applied and len(applied) == 3 and not any("make" in pat for pat in applied)
+bouncer.HOME = SHOME
+assert bouncer.local_verdict("docker compose up -d", bouncer.settings(SPROJ)) == "allow_patterns"
+bouncer.HOME = HOME
+
 # plugin manifests point at real files and agree on the version
 hooks = json.loads((HERE / "hooks" / "hooks.json").read_text())
 assert {"PreToolUse", "PostToolUse"} <= set(hooks["hooks"])
@@ -432,6 +523,8 @@ marketplace = json.loads((HERE / ".claude-plugin" / "marketplace.json").read_tex
 assert plugin["version"] == marketplace["plugins"][0]["version"] == bouncer.VERSION, "versions must match"
 for name in ("report", "judge", "calibrate", "trust"):
     assert (HERE / "commands" / f"{name}.md").read_text().count("bouncer.py") == 1
+suggest_md = (HERE / "commands" / "suggest.md").read_text()
+assert suggest_md.count("!`python3") == 1 and "suggest`" in suggest_md and "--apply" in suggest_md
 assert "$ARGUMENTS" in (HERE / "commands" / "judge.md").read_text()
 # the README's measured section must match the committed eval
 readme = (HERE / "README.md").read_text()

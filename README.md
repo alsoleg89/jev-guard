@@ -166,6 +166,7 @@ After a day of work:
 ```
 /jev-bouncer:report        what would have been allowed, denied, deferred; prompts you answered that would have vanished
 /jev-bouncer:calibrate     the same log at other thresholds, with the commands that would newly auto-allow
+/jev-bouncer:suggest       allow_patterns for the prompts you keep answering, so they stop coming back
 /jev-bouncer:trust         mark this repository trusted: test runners and project scripts may auto-run here
 /jev-bouncer:judge <cmd>   ask about one command
 ```
@@ -239,6 +240,7 @@ project; elsewhere it may set `policy`, `policy_file` and `hold_patterns` only.
 | `local_allow` | `JEV_BOUNCER_LOCAL_ALLOW` | `on` | built-in read-only allowlist |
 | `cache_ttl` | `JEV_BOUNCER_CACHE_TTL` | `21600` | seconds an identical question is answered from cache; `0` disables |
 | `allow_patterns` | | `[]` | your regexes: matching commands are allowed with no API call (user config, or trusted project) |
+| `project_allow` | | `{}` | `{absolute project path: [regex, ...]}` in user config, added to `allow_patterns` in that directory tree; `suggest --apply` writes it |
 | `hold_patterns` | | `[]` | your regexes: matching commands are never auto-allowed |
 | `trusted_projects` | | `[]` | absolute paths; `bouncer.py trust` manages this list |
 | `policy`, `policy_file` | `JEV_BOUNCER_POLICY` | | plain-language policy text, or a file (default `.jev-bouncer.md`) |
@@ -247,6 +249,28 @@ project; elsewhere it may set `policy`, `policy_file` and `hold_patterns` only.
 | | `JEV_BOUNCER_URL` | TypeSafe | any server speaking the Jev HTTP API, such as a local openjev-sglang |
 | | `JEV_BOUNCER_HOME` | `~/.jev-bouncer` | key file, config, log and cache |
 | | `JEV_BOUNCER_LOG_MAX_MB` | `20` | the log rotates once past this size |
+
+### Suggestions from your own log
+
+`/jev-bouncer:suggest` (or `bouncer.py suggest [--since HOURS] [--project PATH] [--min N] [--json]`) reads the
+log for Bash commands that jev-bouncer deferred and that then ran, which means you, or Claude Code's own
+permission flow, approved them. It groups them by shape (program plus subcommand: `npm run test`,
+`docker compose up`, `gh pr view`) and proposes one anchored regex per shape seen at least `--min` times,
+default 2, with counts and examples. A shape is never proposed if it hits a tripwire, if the program
+dispatches on an argument the shape strips (`python3 app.py` would become `^python3`), or if the regex
+would also match a command that was denied or tripped in the log.
+
+Nothing is written until you say so. `suggest --apply '<pattern>'` writes only patterns from that list:
+
+- **in a trusted project**, into the repository's `.jev-bouncer.json` under `allow_patterns`, so the rule
+  travels with the repo;
+- **anywhere else**, into `~/.jev-bouncer/config.json` under `project_allow`, a map from absolute project
+  path to patterns that apply in that directory tree only. An untrusted repository's own config may not
+  widen `allow_patterns` (that is the point of `PROJECT_KEYS`), so the rule has to live in your config
+  instead. Run `/jev-bouncer:trust` first if you would rather commit it.
+
+An applied pattern skips the API call for matching commands. Tripwires and `hold_patterns` are still
+checked first, so a pattern can never auto-allow `npm run test && rm -rf dist`.
 
 ## What leaves your machine, and what is kept
 

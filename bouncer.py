@@ -10,6 +10,7 @@ Hooks (dispatched by tool name, see hooks/hooks.json):
 Commands:
   report     Summarize the log: verdicts per tool, prompts saved, injections, cost, cache hit rate.
   calibrate  Replay your own log at other thresholds and show what would change.
+  suggest    Propose allow_patterns from commands you deferred and then approved; --apply writes them.
   judge      Judge one command (or --edit PATH, --mcp TOOL JSON) and print the probabilities.
   scan       Read text from stdin and print p(injection).
   trust      Mark the current project (or PATH) trusted: test runners and project scripts may auto-run there.
@@ -63,6 +64,7 @@ DEFAULTS = {
     "scan_min_chars": 40,      # tool results shorter than this are not scanned
     "local_allow": "on",       # built-in read-only allowlist: zero latency, zero cost, works with no key
     "trusted_projects": [],    # absolute paths where test runners and project scripts may auto-run
+    "project_allow": {},       # {absolute project path: [regex, ...]} added to allow_patterns there; `suggest --apply` writes it
 }
 PROJECT_KEYS = {"policy", "policy_file", "hold_patterns"}  # a repo's own config can only tighten, unless trusted
 LOG_MAX_MB = float(os.getenv("JEV_BOUNCER_LOG_MAX_MB", "20"))
@@ -130,6 +132,9 @@ def settings(cwd=""):
         if candidate:
             policy = candidate.read_text()
     cfg["policy_text"] = policy.strip()[:2000]
+    for root, patterns in (cfg.get("project_allow") or {}).items():  # written by `bouncer.py suggest --apply`
+        if is_trusted(cwd, [root]):
+            cfg["allow_patterns"] = list(cfg.get("allow_patterns") or []) + list(patterns)
     cfg["allow_re"] = [re.compile(p) for p in cfg.get("allow_patterns") or []]
     cfg["hold_re"] = [re.compile(p) for p in cfg.get("hold_patterns") or []]
     return cfg
@@ -816,6 +821,111 @@ def calibrate(args):
             print(f"  {r['p_danger']:.2f}  {r['command'][:80]!r}")
 
 
+# ----------------------------------------------------------------------------- suggest
+WORD = re.compile(r"^[A-Za-z][\w.+-]*$")  # a bare program or subcommand token: npm, run, docker-compose, python3
+
+
+def shape(command):
+    r"""Program plus subcommand(s): `npm run test`, `docker compose up`, `gh pr view`, `pytest`.
+
+    None when the leading token dispatches on an argument we would strip (`python3 app.py`), because
+    `^python3\b` would auto-allow anything that program can be told to do.
+    """
+    tokens = command.split()
+    words = []
+    for token in tokens:
+        if len(words) == 3 or not WORD.match(token):
+            break
+        words.append(token)
+    if not words:
+        return None
+    if len(words) < 2 and any(not t.startswith("-") for t in tokens[1:]):
+        return None
+    return " ".join(words)
+
+
+def proposals(rows, min_count):
+    """Shapes of commands that were deferred and then ran, with an anchored regex that no denied command matches."""
+    ran = ran_set(rows)
+    bash = [r for r in rows if r.get("event") == "pre" and r.get("tool") == "Bash" and r.get("command")]
+    # anything the bouncer refused, or that a tripwire would catch today, is a counterexample, never a candidate
+    refused = [r["command"] for r in bash if r.get("decision") == "deny" or r.get("tripped") or BASH_TRIPWIRES.search(r["command"])]
+    groups, approved = {}, 0
+    for r in bash:
+        command = r["command"]
+        if r.get("decision") != "defer" or command in refused or (r.get("session_id"), command) not in ran:
+            continue
+        approved += 1
+        key = shape(command)
+        if key and not BASH_TRIPWIRES.search(key):
+            groups.setdefault(key, []).append(command)
+    out = []
+    for key, commands in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if len(commands) < min_count:
+            continue
+        pattern = "^" + " ".join(re.escape(word) for word in key.split()) + r"\b"
+        rx = re.compile(pattern)
+        if not all(rx.search(c) for c in commands) or any(rx.search(c) for c in refused):
+            continue  # a proposal must match its own examples and nothing you or a tripwire refused
+        out.append({"pattern": pattern, "shape": key, "count": len(commands), "examples": sorted(set(commands))[:2]})
+    return out, approved
+
+
+def write_patterns(project, patterns, trusted):
+    """Trusted project: its own .jev-bouncer.json. Otherwise your config, since a repo file cannot widen allow_patterns."""
+    if trusted:
+        target = find_up(project, ".jev-bouncer.json") or Path(project) / ".jev-bouncer.json"
+        data = read_json(target)
+        data["allow_patterns"] = merge(data.get("allow_patterns"), patterns)
+    else:
+        HOME.mkdir(mode=0o700, exist_ok=True)
+        target = HOME / "config.json"
+        data = read_json(target)
+        per_project = data.setdefault("project_allow", {})
+        per_project[project] = merge(per_project.get(project), patterns)
+    target.write_text(json.dumps(data, indent=1))
+    return target
+
+
+def merge(existing, added):
+    kept = [str(p) for p in existing or []]
+    return kept + [p for p in added if p not in kept]
+
+
+def suggest(args):
+    project = os.path.abspath(os.path.expanduser(args.project)) if args.project else os.getcwd()
+    cfg = settings(project)
+    found, approved = proposals(load_rows(args.since, os.path.basename(project)), args.min)
+    if args.apply is not None:
+        chosen = [p["pattern"] for p in found if not args.apply or p["pattern"] in args.apply or p["shape"] in args.apply]
+        unknown = [a for a in args.apply if a not in [p["pattern"] for p in found] + [p["shape"] for p in found]]
+        if unknown or not chosen:
+            sys.exit("jev-bouncer: not among the current suggestions: " + ", ".join(unknown or ["(none matched)"]))
+        target = write_patterns(project, chosen, cfg["trusted"])
+        print("added to allow_patterns in " + str(target) + (" (project trusted)" if cfg["trusted"] else
+              "\n(the project is not trusted, so its own .jev-bouncer.json may not widen allow_patterns; "
+              "run `bouncer.py trust` there to keep these with the repository)"))
+        for pattern in chosen:
+            print("  " + pattern)
+        return
+    if args.json:
+        print(json.dumps({"project": project, "trusted": cfg["trusted"], "min": args.min,
+                          "deferred_then_approved": approved, "suggestions": found}, indent=1))
+        return
+    print(f"{approved} commands in {os.path.basename(project)} were deferred and then ran; "
+          f"{len(found)} shapes repeat at least {args.min} times.")
+    if not found:
+        print("nothing to suggest yet: keep working, or lower --min.")
+        return
+    print("\nallow_patterns that would have answered those prompts for you:")
+    for item in found:
+        print(f"\n  {item['pattern']}    {item['count']}x")
+        for example in item["examples"]:
+            print(f"      e.g. {example[:90]}")
+    print("\nApply the ones you trust:  bouncer.py suggest --apply " + " ".join("'" + i["pattern"] + "'" for i in found[:2]))
+    print("A matching command is then allowed with no API call. Tripwires and hold_patterns still win.")
+
+
 def trust(args):
     path = os.path.abspath(args.path or os.getcwd())
     HOME.mkdir(mode=0o700, exist_ok=True)
@@ -894,11 +1004,14 @@ def main():
     sub = parser.add_subparsers(dest="action")
     for name in ("pre", "post", "scan", "version"):
         sub.add_parser(name)
-    for name in ("report", "calibrate"):
+    for name in ("report", "calibrate", "suggest"):
         p = sub.add_parser(name)
         p.add_argument("--since", type=float, metavar="HOURS")
         p.add_argument("--project")
         p.add_argument("--json", action="store_true")
+        if name == "suggest":
+            p.add_argument("--min", type=int, default=2, metavar="N", help="only shapes seen at least N times")
+            p.add_argument("--apply", nargs="*", metavar="PATTERN", help="write these suggestions (all of them if none named)")
     j = sub.add_parser("judge")
     j.add_argument("command", nargs=argparse.REMAINDER, help="the shell command; put flags after -- if it starts with a dash")
     j.add_argument("--edit", metavar="PATH", help="judge writing stdin to PATH")
@@ -915,6 +1028,8 @@ def main():
         report(args)
     elif action == "calibrate":
         calibrate(args)
+    elif action == "suggest":
+        suggest(args)
     elif action == "judge":
         judge_cli(args)
     elif action == "trust":
