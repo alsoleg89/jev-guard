@@ -24,8 +24,15 @@ What jev-bouncer aims to do against that attacker:
 
 What it does not do:
 
-- it does not read files a command references, so a dangerous `Makefile` target or `package.json` script
-  is judged by its name, not its contents (edits to those files are judged when the agent writes them);
+- it does not follow a command all the way down: it reads what a command runs for a fixed set of shapes
+  only, namely `make` targets (the recipe plus one level of prerequisites), `package.json` scripts with
+  their `pre`/`post` hooks, `bash`/`sh`/`zsh`/`source` and `./script.sh` files, `python` and `node` file
+  arguments, `just` recipes and `Taskfile` tasks. Those are resolved inside the project (a `..` path or a
+  symlink that escapes it is refused), at most 64 KB of a file is read, and a ~1500-character excerpt is
+  judged along with the command; a tripwire in the excerpt trips the command. Nothing is expanded or
+  executed, so variables, `$(shell ...)`, `include`d makefiles, nested `make` and whatever a recipe calls
+  in turn are still judged by name, as is every other shape. `read_referenced=off` restores the old
+  behaviour, where a dangerous target was judged by its name alone;
 - it does not see shell state across calls: `X='rm -rf ~'` in one call and `$X` in the next are two
   separate, individually harmless-looking strings. `eval`, `source` and bare-variable execution are
   tripwires for this reason;

@@ -26,6 +26,7 @@ import json
 import os
 import random
 import re
+import shlex
 import sys
 import time
 import urllib.error
@@ -62,6 +63,7 @@ DEFAULTS = {
     "policy_file": "",
     "scan_min_chars": 40,      # tool results shorter than this are not scanned
     "local_allow": "on",       # built-in read-only allowlist: zero latency, zero cost, works with no key
+    "read_referenced": "on",   # read the Makefile target, npm script or script file a command names
     "trusted_projects": [],    # absolute paths where test runners and project scripts may auto-run
 }
 PROJECT_KEYS = {"policy", "policy_file", "hold_patterns"}  # a repo's own config can only tighten, unless trusted
@@ -73,6 +75,7 @@ ENV_KEYS = {
     "JEV_BOUNCER_INJECT_ACTION": "inject_action", "JEV_BOUNCER_SCAN": "scan", "JEV_BOUNCER_SCAN_BASH": "scan_bash",
     "JEV_BOUNCER_CACHE_TTL": "cache_ttl", "JEV_BOUNCER_EDITS": "guard_edits", "JEV_BOUNCER_MCP": "guard_mcp",
     "JEV_BOUNCER_POLICY": "policy", "JEV_BOUNCER_SCAN_MIN_CHARS": "scan_min_chars", "JEV_BOUNCER_LOCAL_ALLOW": "local_allow",
+    "JEV_BOUNCER_READ_REFERENCED": "read_referenced",
 }
 EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
 
@@ -510,10 +513,156 @@ def with_policy(state, cfg):
     return state
 
 
+# ----------------------------------------------------------------------------- referenced source
+# `make deploy` and `npm run clean` are judged by their name unless we look at what they run. These
+# helpers return a short excerpt of the recipe, script or file a command names. Read-only, capped,
+# resolved inside the project only; nothing is expanded, substituted or executed.
+REF_MAX_BYTES = 64 * 1024
+REF_MAX_CHARS = 1500
+REF_HEAD_LINES = 40
+MAKEFILES = ("Makefile", "makefile", "GNUmakefile")
+JUSTFILES = ("justfile", "Justfile", ".justfile")
+TASKFILES = ("Taskfile.yml", "Taskfile.yaml")
+SCRIPT_RUNNERS = {"bash", "sh", "zsh", "dash", "ksh", "source", "."}
+
+
+def read_inside(cwd, name):
+    """Up to 64 KB of a project file, or None. Anything that resolves outside the project, through a
+    symlink or `..`, is refused: the same realpath check `judge_edit` uses."""
+    if not cwd or not name:
+        return None
+    root = os.path.realpath(cwd)
+    target = os.path.realpath(os.path.join(cwd, name))
+    if target != root and not target.startswith(root + os.sep):
+        return None
+    try:
+        with open(target, "rb") as handle:
+            return handle.read(REF_MAX_BYTES).decode("utf-8", "replace")
+    except OSError:  # missing, a directory, unreadable: nothing to say
+        return None
+
+
+def first_file(cwd, names):
+    for name in names:
+        text = read_inside(cwd, name)
+        if text is not None:
+            return text
+    return None
+
+
+def block(text, name):
+    """The `name:` line and the lines indented under it: a Makefile target, justfile recipe, Taskfile task."""
+    start = re.compile(r"^(\s*)" + re.escape(name) + r"\s*(?:\([^)]*\))?\s*:(?!=)")
+    out, base = [], None
+    for line in text.splitlines():
+        if base is None:
+            found = start.match(line)
+            if found:
+                base, out = len(found.group(1)), [line]
+            continue
+        if line.strip() and len(line) - len(line.lstrip()) <= base:
+            break
+        out.append(line)
+    return "\n".join(out).rstrip()
+
+
+def make_target(target, cwd):
+    text = first_file(cwd, MAKEFILES)
+    if text is None:
+        return ""
+    if not target:  # bare `make`: the first real target is the default goal
+        found = re.search(r"^([A-Za-z0-9_][\w.-]*)\s*:(?!=)", text, re.M)
+        target = found.group(1) if found else ""
+    body = block(text, target) if target else ""
+    if not body:
+        return ""
+    for prereq in body.split("\n", 1)[0].split(":", 1)[1].split()[:5]:  # ponytail: one level, no recursion
+        dep = block(text, prereq)
+        if dep and dep not in body:
+            body += "\n" + dep
+    return "# Makefile target {}\n{}".format(target, body)
+
+
+def npm_script(script, cwd):
+    text = read_inside(cwd, "package.json")
+    try:
+        scripts = json.loads(text).get("scripts") or {}
+    except (TypeError, ValueError, AttributeError):
+        return ""
+    lines = ["{}: {}".format(name, scripts[name]) for name in ("pre" + script, script, "post" + script)
+             if isinstance(scripts.get(name), str)]
+    return "# package.json script {}\n".format(script) + "\n".join(lines) if lines else ""
+
+
+def file_head(path, cwd, limit=REF_HEAD_LINES):
+    text = read_inside(cwd, path)
+    if text is None:
+        return ""
+    return "# {}\n".format(path) + "\n".join(text.splitlines()[:limit])
+
+
+def named_block(cwd, files, name, label):
+    text = first_file(cwd, files)
+    body = block(text, name) if text else ""
+    return "# {} {}\n{}".format(label, name, body) if body else ""
+
+
+def one_shape(words, cwd):
+    name = os.path.basename(words[0])
+    args = [w for w in words[1:] if not w.startswith("-")]
+    first = args[0] if args else ""
+    if name == "make":
+        return make_target(first, cwd)
+    if name in ("npm", "pnpm", "yarn", "bun"):
+        script = args[1] if first in ("run", "run-script") and len(args) > 1 else first
+        return npm_script(script, cwd) if script else ""
+    if words[0].startswith(("./", "../")):
+        return file_head(words[0], cwd)
+    if name in SCRIPT_RUNNERS:
+        return file_head(first, cwd)
+    if name in ("python", "python3", "node") and first.endswith((".py", ".js", ".mjs", ".cjs")):
+        return file_head(first, cwd)
+    if name == "just" and first:
+        return named_block(cwd, JUSTFILES, first, "justfile recipe")
+    if name == "task" and first:
+        return named_block(cwd, TASKFILES, first, "Taskfile task")
+    return ""
+
+
+def referenced_source(command, cwd):
+    """A short, redacted excerpt of what `command` would actually run, or "" for any other shape."""
+    found = []
+    try:
+        for segment in re.split(r"[;&|\n]+", command):
+            words = shlex.split(segment)  # raises on unbalanced quotes: then we simply say nothing
+            excerpt = one_shape(words, cwd) if words else ""
+            if excerpt and excerpt not in found:
+                found.append(excerpt)
+    except (ValueError, OSError):
+        pass
+    return clip(redact("\n\n".join(found)), REF_MAX_CHARS, REF_MAX_CHARS // 3) if found else ""
+
+
+def referenced_trip(runs):
+    """A tripwire hit inside the excerpt, as a reason line. Comment lines, including our own labels,
+    are skipped: a dangerous command someone commented out does not run."""
+    label = "referenced file"
+    for line in runs.splitlines():
+        if line.startswith("# "):
+            label = line[2:]
+        elif not line.lstrip().startswith("#"):
+            hit = BASH_TRIPWIRES.search(line)
+            if hit:
+                return "tripwire in {}: {}".format(label, hit.group(0).strip())
+    return ""
+
+
 # ----------------------------------------------------------------------------- judges
-def local_verdict(command, cfg):
-    """The no-API path: built-in read-only allowlist, trusted-project runners, and your own allow_patterns."""
-    if BASH_TRIPWIRES.search(command) or any(r.search(command) for r in cfg["hold_re"]):
+def local_verdict(command, cfg, ref_trip=""):
+    """The no-API path: built-in read-only allowlist, trusted-project runners, and your own allow_patterns.
+    `ref_trip` is a tripwire found in what the command runs: even in a trusted project `make test` skips
+    the shortcut when the Makefile's test target does something a tripwire would catch."""
+    if ref_trip or BASH_TRIPWIRES.search(command) or any(r.search(command) for r in cfg["hold_re"]):
         return None
     if cfg["local_allow"] != "off" and (LOCAL_ALLOW.match(command) or (cfg["trusted"] and TRUSTED_LOCAL_ALLOW.match(command))):
         return "local_allowlist"
@@ -525,8 +674,10 @@ def local_verdict(command, cfg):
 def judge_command(command, cwd="", description="", cfg=None, local=True):
     cfg = cfg or settings(cwd)
     command = redact(command)
-    tripped = bool(BASH_TRIPWIRES.search(command)) or any(r.search(command) for r in cfg["hold_re"])
-    source = local_verdict(command, cfg) if local else None
+    runs = referenced_source(command, cwd) if cfg["read_referenced"] != "off" else ""
+    ref_trip = referenced_trip(runs)
+    tripped = bool(BASH_TRIPWIRES.search(command)) or bool(ref_trip) or any(r.search(command) for r in cfg["hold_re"])
+    source = local_verdict(command, cfg, ref_trip) if local else None
     if source:
         return {"command": command[:500], "cwd": cwd, "p_danger": 0.0, "probs": {}, "nouls": {}, "tripped": False,
                 "decision": "allow", "latency_ms": 0, "model": source, "input_tokens": 0, "cached": False, "fast": True}
@@ -534,10 +685,13 @@ def judge_command(command, cwd="", description="", cfg=None, local=True):
         return None
     state = with_policy({"policy": BASH_POLICY, "cwd": cwd, "command": command[:MAX_CHARS],
                          "agent_description": redact(description or "")[:300]}, cfg)
+    if runs:  # judge what the command runs, not what it is called
+        state["runs"] = runs
     raw, latency, cached = cached_ask(state, BASH_QUESTIONS, cfg)
     probs, nouls = parse(raw, BASH_QUESTIONS, "effect")
     return {"command": command[:500], "cwd": cwd, "p_danger": probs["destructive"], "probs": probs, "nouls": nouls,
-            "tripped": tripped, "decision": decide(probs["destructive"], nouls, tripped, cfg, HARD_STOP["effect"], cfg["trusted"]),
+            "tripped": tripped, "ref_trip": ref_trip,
+            "decision": decide(probs["destructive"], nouls, tripped, cfg, HARD_STOP["effect"], cfg["trusted"]),
             "latency_ms": round(latency), "model": raw.get("model"), "input_tokens": raw.get("usage", {}).get("input_tokens", 0),
             "cached": cached}
 
@@ -639,8 +793,9 @@ def permission(decision, reason):
 def reason_line(verdict):
     if verdict.get("fast"):
         return f"jev-bouncer: {verdict['model']}, no API call"
-    return "jev-bouncer: p(danger)={:.2f}, {}".format(
+    line = "jev-bouncer: p(danger)={:.2f}, {}".format(
         verdict["p_danger"], ", ".join(f"{name}={value:.2f}" for name, value in verdict["nouls"].items()))
+    return line + ("; " + verdict["ref_trip"] if verdict.get("ref_trip") else "")
 
 
 def pre(payload, cfg):
@@ -840,7 +995,7 @@ def print_verdict(v, cfg, subject):
         return
     print("effect    " + "  ".join(f"{name} {p:.2f}" for name, p in v["probs"].items()))
     print("risks     " + "  ".join(f"{name} {p:.2f}" for name, p in v["nouls"].items()))
-    print(f"tripwire  {'hit' if v['tripped'] else 'no'}")
+    print(f"tripwire  {'hit' if v['tripped'] else 'no'}" + (f"  ({v['ref_trip']})" if v.get("ref_trip") else ""))
     print(f"latency   {v['latency_ms']} ms{'  (cached)' if v.get('cached') else ''}   model {v['model']}   input tokens {v['input_tokens']}")
 
 
