@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Windows support for the hooks. `hooks/hooks.json` now runs `hooks/run.cmd`, a polyglot wrapper that
+  cmd.exe and sh each read their own half of; it resolves `py -3`, `python3`, `python` in that order and
+  passes stdin and the exit code straight through. POSIX behaviour is unchanged. Not tested on a Windows
+  machine: the wrapper follows the superpowers polyglot-hooks reference, and the sh half is covered by
+  the offline suite.
+- `bouncer.py` no longer assumes POSIX paths: project containment folds case and separator with
+  `os.path.normcase`, path tripwires accept `\`, secret-path tripwires cover `%USERPROFILE%\.ssh`,
+  `$env:USERPROFILE` and `C:\Users\you\.aws`, system-path tripwires cover `C:\Windows\`,
+  `C:\Program Files\` and `%SystemRoot%`, a command that arrives with CRLF still matches the
+  allowlist, log and config files are read and written as UTF-8, and `chmod` failures are ignored.
+- Windows tripwires: `Remove-Item -Recurse|-Force`, `rd /s`, `del|erase /f|/s|/q`, `format c:`,
+  `diskpart`, `reg add|delete|import`, `schtasks /create`, `Set-ExecutionPolicy`, `Invoke-Expression`
+  and `iex` (which also catches `Invoke-WebRequest … | iex`), `powershell -enc|-EncodedCommand`,
+  `certutil -decode|-encode|-urlcache`, `net user`, `netsh`, `takeown`, `icacls`. The injection sentinel
+  also fires after `Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`, `winget install`,
+  `choco install`.
+
 ## 0.4.0
 
 - Renamed from jev-guard to jev-bouncer; the old name belonged to an unrelated project. Everything that carried the name moved with it: the plugin and marketplace are `jev-bouncer`, commands are `/jev-bouncer:report`, `/jev-bouncer:calibrate`, `/jev-bouncer:judge`, `/jev-bouncer:trust`, the script is `bouncer.py`, settings are `JEV_BOUNCER_*`, the state directory is `~/.jev-bouncer` (key, config, log, cache), and project files are `.jev-bouncer.json` and `.jev-bouncer.md`. To migrate: `mv ~/.jev-guard ~/.jev-bouncer`, rename any project config files, and reinstall from `alsoleg89/jev-bouncer`. GitHub redirects the old repository URL.
