@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Outbound exfiltration tier: `WebFetch` and `WebSearch` are now judged in `PreToolUse`, before the request leaves, not only scanned for injection after it returns. Deterministic tripwires, never an API call, so a web tool costs nothing and adds no latency even with a key configured. Denied: a secret-shaped value in the URL or query; one opaque 40-character run of `[A-Za-z0-9+/=_-]` in a path segment, parameter or search word (exempting a bare 40–64 digit hex hash and short words joined by `-`/`_`, so git commit URLs, YouTube ids, wiki titles and blog slugs pass); `file:`, `ftp:`, `gopher:`, `data:` and other non-`http(s)` schemes; `localhost`, `127.0.0.0/8`, `::1`, `169.254.169.254`, `.internal`, `.local`; raw IP hosts; ports other than 80 and 443; `user:pass@host`. Enforced in `guard` and `on`, logged only in `dry`. Off with `guard_web=off` / `JEV_BOUNCER_WEB=off`.
+- URLs are redacted before they appear in the log, the reason line or stderr.
+
 ## 0.4.0
 
 - Renamed from jev-guard to jev-bouncer; the old name belonged to an unrelated project. Everything that carried the name moved with it: the plugin and marketplace are `jev-bouncer`, commands are `/jev-bouncer:report`, `/jev-bouncer:calibrate`, `/jev-bouncer:judge`, `/jev-bouncer:trust`, the script is `bouncer.py`, settings are `JEV_BOUNCER_*`, the state directory is `~/.jev-bouncer` (key, config, log, cache), and project files are `.jev-bouncer.json` and `.jev-bouncer.md`. To migrate: `mv ~/.jev-guard ~/.jev-bouncer`, rename any project config files, and reinstall from `alsoleg89/jev-bouncer`. GitHub redirects the old repository URL.

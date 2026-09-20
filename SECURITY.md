@@ -12,13 +12,18 @@ Claude Code's own deny rules are the boundary. Run jev-bouncer inside them, not 
 
 Assumed attacker: someone who controls content your agent reads (a web page, a dependency README, an
 issue, an MCP result) or a repository you cloned, and who wants the agent to run a destructive command,
-exfiltrate data, or persist on your machine. The agent itself is not assumed adversarial.
+exfiltrate data, or persist on your machine. The agent itself is not assumed adversarial, but it is
+assumed to be hijackable by that content: the injection sentinel reads a tool result only after it has
+already reached the model, so the outbound side is guarded separately, before the request goes out.
 
 What jev-bouncer aims to do against that attacker:
 
 - never auto-allow a command, edit, or MCP call that matches a tripwire, whatever the model says;
 - never let a cloned repository loosen your settings: a repo's `.jev-bouncer.json` can only tighten;
 - never auto-run repository-controlled code (tests, builds, scripts) unless you marked the project trusted;
+- deny the obvious outbound exfiltration shapes on `WebFetch` and `WebSearch` before the request leaves:
+  a secret-shaped value or an opaque 40-character blob in the URL or query, a loopback, link-local or
+  `.internal` host, a raw IP, a non-standard port, a non-`http(s)` scheme, credentials in the userinfo;
 - never send your secrets to the API: token-shaped values are redacted before any request and before logging;
 - fail open, or fail to a prompt if you set `fail=ask`, never fail to an allow.
 
@@ -31,6 +36,10 @@ What it does not do:
   tripwires for this reason;
 - it cannot withhold a tool result that already reached the model: the injection sentinel adds a warning
   (or blocks the turn with `inject_action=block`), it does not filter;
+- the outbound web tier matches shapes, not meaning: a short secret, one encoded to look like a word,
+  one split across several requests, or one sent by a channel that is not `WebFetch` or `WebSearch`
+  (a Bash `curl`, an MCP tool, a file the agent writes somewhere synced) still gets out. It raises the
+  cost of the obvious one-shot exfiltration; network egress control is the boundary;
 - it is not deterministic: identical input moves by about ±0.03 between calls, and the cache only makes
   repeats consistent within its TTL.
 
