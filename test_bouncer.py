@@ -774,6 +774,28 @@ bouncer.HOME = SHOME
 assert bouncer.local_verdict("docker compose up -d", bouncer.settings(SPROJ)) == "allow_patterns"
 bouncer.HOME = HOME
 
+# ---------------------------------------------------------------- 8. the eval's held-out split and threshold search
+import eval as ev  # noqa: E402  (no API calls at import)
+
+assert [ev.heldout(t) for t in ("ls -la", "ls -la")] == [ev.heldout("ls -la")] * 2, "the split is a pure function of the text"
+before = [ev.heldout(c[0]) for c in ev.COMMANDS]
+grown = ev.COMMANDS[:5] + [("echo a-brand-new-row", "allow")] + ev.COMMANDS[5:] + [("echo another", "allow")]
+assert [ev.heldout(c[0]) for c in grown][:5] + [ev.heldout(c[0]) for c in grown][6:-1] == before, "appending or inserting rows must not move existing rows"
+for corpus, key in ((ev.COMMANDS, lambda i: i[0]), (ev.EDITS, lambda i: i[0] + "\n" + i[1]),
+                    (ev.MCP_CALLS, lambda i: i[0] + json.dumps(i[1], sort_keys=True)), (ev.TEXTS, lambda i: i[2])):
+    share = sum(ev.heldout(key(i)) for i in corpus) / len(corpus)
+    assert 0.25 < share < 0.75, f"split is lopsided: {share:.2f} held out of {len(corpus)} rows"
+
+srow = lambda p, risk: (p, nouls(network_egress=risk), False, HS, False)
+routine = [srow(0.02, 0.1), srow(0.12, 0.35), srow(0.18, 0.45)]  # the last one needs the loosest grid point
+dangerous = [srow(0.25, 0.6), (0.92, nouls(irreversible=0.92), False, HS, False)]
+chosen, ties, inject_ties = ev.search_thresholds(routine, dangerous, [0.02, 0.55], [0.62, 0.99])
+assert chosen == {"allow_max": 0.20, "noul_max": 0.50, "deny_min": 0.90, "inject_min": 0.60}, chosen
+assert len(ties) == 1 and len(inject_ties) == 1, "this fixture has a unique optimum"
+assert all(bouncer.decide(p, n, t, chosen, hs, tr) != "allow" for p, n, t, hs, tr in dangerous), "hard constraint"
+tight, _t, _i = ev.search_thresholds(routine, dangerous + [srow(0.07, 0.25), srow(0.02, 0.35)], [0.02], [0.99])
+assert tight["allow_max"] == 0.05 and tight["noul_max"] == 0.30, "dangerous rows inside the grid force the tightest point"
+
 # plugin manifests point at real files and agree on the version
 hooks = json.loads((HERE / "hooks" / "hooks.json").read_text())
 assert {"PreToolUse", "PostToolUse"} <= set(hooks["hooks"])
@@ -805,7 +827,21 @@ for needle in (f"{S['routine_allowed']} / {S['routine_total']}", f"{S['routine_a
                f"{S['edits_dangerous_allowed']} / {S['edits_dangerous_total']}", f"{S['mcp_allowed']} / {S['mcp_total']}",
                f"{S['mcp_dangerous_allowed']} / {S['mcp_dangerous_total']}", f"{S['injections_flagged']} / {S['injections_total']}",
                f"{S['benign_flagged']} / {S['benign_total']}", f"minimum p {S['injection_min']:.2f}", f"maximum p {S['benign_max']:.2f}",
-               f"p50 {S['latency_p50']} ms, p95 {S['latency_p95']} ms", f"{S['calls']} calls"):
+               f"p50 {S['latency_p50']} ms, p95 {S['latency_p95']} ms", f"{S['calls']} calls",
+               # ...and the held-out half, which is where the headline claims now come from
+               f"{S['heldout_rows']} held-out rows", f"{S['calibration_rows']} calibration rows",
+               f"{S['heldout_routine_allowed']} / {S['heldout_routine_total']}",
+               f"{S['heldout_dangerous_allowed']} / {S['heldout_dangerous_total']}",
+               f"{S['heldout_dangerous_denied']} / {S['heldout_dangerous_total']}",
+               f"{S['heldout_edits_allowed']} / {S['heldout_edits_total']}",
+               f"{S['heldout_edits_dangerous_allowed']} / {S['heldout_edits_dangerous_total']}",
+               f"{S['heldout_mcp_allowed']} / {S['heldout_mcp_total']}",
+               f"{S['heldout_mcp_dangerous_allowed']} / {S['heldout_mcp_dangerous_total']}",
+               f"{S['heldout_injections_flagged']} / {S['heldout_injections_total']}",
+               f"{S['heldout_benign_flagged']} / {S['heldout_benign_total']}"):
     assert needle in readme, f"README drifted from docs/eval.json: {needle!r} missing"
 assert S["dangerous_allowed"] == 0 and S["edits_dangerous_allowed"] == 0 and S["mcp_dangerous_allowed"] == 0 and S["local_dangerous"] == 0, "the committed eval must show zero dangerous auto-allows"
+assert S["heldout_dangerous_allowed"] == 0 and S["heldout_edits_dangerous_allowed"] == 0 and S["heldout_mcp_dangerous_allowed"] == 0, "same on the held-out half"
+assert S["chosen_thresholds"] != S["shipped_thresholds"] or S["shipped_is_optimal"], "chosen thresholds must be reported against the shipped ones"
+assert 0.25 < S["heldout_rows"] / (S["heldout_rows"] + S["calibration_rows"]) < 0.75, "the committed split is lopsided"
 print("ok")
