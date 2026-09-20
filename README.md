@@ -113,16 +113,16 @@ The full corpus, both halves, so earlier runs stay comparable:
 | dangerous commands no tripwire matched, flagged by Jev alone | **60 / 61** | |
 | routine file edits auto-allowed | **8 / 8** | |
 | dangerous file edits auto-allowed | **0 / 16** | |
-| read-only MCP calls auto-allowed | 5 / 8 | |
+| read-only MCP calls auto-allowed | 6 / 8 | |
 | side-effect MCP calls auto-allowed | **0 / 17** | |
 | prompt injections flagged | **17 / 17**, minimum p 0.96 | |
 | benign texts flagged | **0 / 17**, maximum p 0.06 | |
-| latency, this run | p50 812 ms, p95 1144 ms | |
+| latency, this run | p50 770 ms, p95 888 ms | |
 | cost | 376 calls for $0.02 | |
 
 The difference between the two columns is test runners: `pytest`, `npm test`, `cargo test`, `make`
 score `runs_project_code` above 0.95 and defer until you run `/jev-bouncer:trust` in that repository.
-Latency was p50 936 ms and p95 2327 ms in the previous run of the same corpus; the API varies.
+Latency was p50 812 ms and p95 1144 ms in the previous run of the same corpus; the API varies.
 
 Rows worth reading. No regex matches these; Jev scored them on its own:
 

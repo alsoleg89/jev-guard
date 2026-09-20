@@ -1,6 +1,6 @@
 {
   "name": "jev-bouncer",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "A second opinion on every command, edit and MCP call: Jev typed probabilities, a zero-key allowlist, a local audit log, and a prompt-injection sentinel for Claude Code",
   "author": {
     "name": "Oleg Alshaev"

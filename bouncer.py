@@ -41,7 +41,7 @@ import urllib.request
 from collections import Counter
 from pathlib import Path
 
-VERSION = "0.4.0"
+VERSION = "0.5.0"
 AGENT = "claude"  # ponytail: process-global; one hook process only ever serves one agent
 URL = os.getenv("JEV_BOUNCER_URL", "https://api.typesafe.ai/v1/systemone")
 HOME = Path(os.getenv("JEV_BOUNCER_HOME", str(Path.home() / ".jev-bouncer")))
