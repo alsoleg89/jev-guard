@@ -8,6 +8,10 @@ Hooks (dispatched by tool name, see hooks/hooks.json):
   post       PostToolUse. Records which commands actually ran, and scans tool results (web fetches,
              MCP results, network-y Bash output) for prompt injection.
 
+Other agents (same judges, same settings, same log; only the wire format differs -- see docs/adapters.md):
+  cursor EVENT   Cursor hook: beforeShellExecution | beforeMCPExecution | preToolUse | postToolUse.
+  gemini EVENT   Gemini CLI hook: BeforeTool | AfterTool.
+
 Commands:
   report     Summarize the log: verdicts per tool, prompts saved, injections, cost, cache hit rate.
   calibrate  Replay your own log at other thresholds and show what would change.
@@ -38,6 +42,7 @@ from collections import Counter
 from pathlib import Path
 
 VERSION = "0.4.0"
+AGENT = "claude"  # ponytail: process-global; one hook process only ever serves one agent
 URL = os.getenv("JEV_BOUNCER_URL", "https://api.typesafe.ai/v1/systemone")
 HOME = Path(os.getenv("JEV_BOUNCER_HOME", str(Path.home() / ".jev-bouncer")))
 LOG = HOME / "log.jsonl"
@@ -974,6 +979,8 @@ def flatten(obj):
 
 
 def log(row):
+    if AGENT != "claude":  # Claude Code rows keep the original format; readers default to "claude"
+        row = {"agent": AGENT, **row}
     HOME.mkdir(mode=0o700, exist_ok=True)
     try:
         if LOG.exists() and LOG.stat().st_size > LOG_MAX_MB * 1024 * 1024:
@@ -1344,22 +1351,155 @@ def scan_cli():
     print(f"p(injection)  {r['p_injection']:.2f}   {'FLAGGED' if r['p_injection'] >= cfg['inject_min'] else 'clean'}   ({r['chars']} chars, {r['latency_ms']} ms)")
 
 
+def judge_payload(action, payload, cfg):
+    """Judge one payload and return Claude Code's hook JSON, or None for "nothing to say"."""
+    try:
+        return {"pre": pre, "post": post}[action](payload, cfg)
+    except Exception as error:  # fail open by default: no output means the agent's own default behavior
+        log({"event": action, "tool": payload.get("tool_name", ""), "session_id": payload.get("session_id", ""), "error": repr(error)[:300]})
+        print(f"jev-bouncer: {error!r}", file=sys.stderr)
+        if action == "pre" and cfg["fail"] == "ask" and cfg["mode"] in ("on", "guard"):
+            return permission("ask", f"jev-bouncer unavailable ({type(error).__name__}); confirm manually")
+        return None
+
+
 def hook(action):
     try:
         payload = json.load(sys.stdin)
     except ValueError:
         return
-    cfg = settings(payload.get("cwd", ""))
-    try:
-        out = {"pre": pre, "post": post}[action](payload, cfg)
-    except Exception as error:  # fail open by default: no output means Claude Code's default behavior
-        log({"event": action, "tool": payload.get("tool_name", ""), "session_id": payload.get("session_id", ""), "error": repr(error)[:300]})
-        print(f"jev-bouncer: {error!r}", file=sys.stderr)
-        if action == "pre" and cfg["fail"] == "ask" and cfg["mode"] in ("on", "guard"):
-            print(json.dumps(permission("ask", f"jev-bouncer unavailable ({type(error).__name__}); confirm manually")))
-        return
+    out = judge_payload(action, payload, settings(payload.get("cwd", "")))
     if out:
         print(json.dumps(out))
+
+
+# ----------------------------------------------------------------------------- other agents
+# Thin adapters, not forks: foreign stdin JSON -> the payload pre()/post() already consume ->
+# foreign stdout JSON. Every judge, tripwire, setting and log row is the Claude Code one.
+# Protocols are quoted with links in docs/adapters.md.
+def as_object(value):
+    """Cursor passes MCP arguments as a JSON string; Gemini CLI passes an object."""
+    if isinstance(value, dict):
+        return value
+    try:
+        loaded = json.loads(value or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def edit_tool_for(tool_input):
+    """Pick the Claude edit tool whose shape edit_parts() already knows how to read."""
+    if tool_input.get("edits"):
+        return "MultiEdit"
+    return "Edit" if tool_input.get("new_string") is not None else "Write"
+
+
+def verdict_of(out):
+    """(decision, reason) from Claude Code's PreToolUse JSON; decision is None when there is nothing to say."""
+    block = (out or {}).get("hookSpecificOutput") or {}
+    return block.get("permissionDecision"), block.get("permissionDecisionReason") or ""
+
+
+# --- Cursor: https://cursor.com/docs/hooks
+CURSOR_PERMISSION_EVENTS = ("beforeShellExecution", "beforeMCPExecution", "preToolUse")
+
+
+def cursor_in(event, data):
+    """Cursor hook input -> (action, internal payload). None means this event is not judged."""
+    roots = data.get("workspace_roots") or []
+    base = {"cwd": data.get("cwd") or (roots[0] if roots else ""), "session_id": data.get("conversation_id") or ""}
+    tool_input = as_object(data.get("tool_input"))
+    if event == "beforeShellExecution":
+        return "pre", {**base, "tool_name": "Bash", "tool_input": {"command": data.get("command") or ""}}
+    if event == "beforeMCPExecution":
+        name = "mcp__{}__{}".format(data.get("mcp_server_name") or "", data.get("tool_name") or "")
+        return "pre", {**base, "tool_name": name, "tool_input": tool_input}
+    if event == "preToolUse":  # edits only: shell and MCP have their own hooks, which also enforce "ask"
+        if tool_input.get("file_path") and not tool_input.get("command"):
+            return "pre", {**base, "tool_name": edit_tool_for(tool_input), "tool_input": tool_input}
+        return None  # a tool this plugin has no judge for
+    if event == "postToolUse":
+        tool = "Bash" if tool_input.get("command") else (data.get("tool_name") or "")
+        return "post", {**base, "tool_name": tool, "tool_input": tool_input, "tool_response": data.get("tool_output")}
+    return None
+
+
+def cursor_out(event, out):
+    if event in CURSOR_PERMISSION_EVENTS:
+        # Cursor blocks the action when a permission hook prints nothing or something off-schema, so
+        # always answer. "ask" is the neutral: a prompt on the shell and MCP hooks, and documented as
+        # accepted-but-not-enforced on preToolUse. It never widens what Cursor would allow on its own.
+        decision, reason = verdict_of(out)
+        reason = reason or "jev-bouncer: no verdict"
+        return {"permission": decision or "ask", "user_message": reason, "agent_message": reason}
+    context = ((out or {}).get("hookSpecificOutput") or {}).get("additionalContext")
+    return {"additional_context": context} if context else None  # postToolUse cannot block; it only adds context
+
+
+# --- Gemini CLI: https://github.com/google-gemini/gemini-cli/blob/main/docs/hooks/reference.md
+GEMINI_TOOLS = {"run_shell_command": "Bash", "write_file": "Write", "replace": "Edit"}
+
+
+def gemini_tool(name):
+    if name in GEMINI_TOOLS:
+        return GEMINI_TOOLS[name]
+    if name.startswith("mcp_"):  # mcp_<server>_<tool>; Gemini's own parser splits on the first underscore too
+        parts = name.split("_", 2)
+        return "mcp__{}__{}".format(parts[1], parts[2]) if len(parts) == 3 else None
+    return None
+
+
+def gemini_in(event, data):
+    base = {"cwd": data.get("cwd") or "", "session_id": data.get("session_id") or ""}
+    name = data.get("tool_name") or ""
+    payload = {**base, "tool_name": gemini_tool(name), "tool_input": as_object(data.get("tool_input"))}
+    if event == "BeforeTool":
+        return ("pre", payload) if payload["tool_name"] else None
+    if event == "AfterTool":
+        payload["tool_name"] = payload["tool_name"] or name
+        return "post", {**payload, "tool_response": data.get("tool_response")}
+    return None
+
+
+def gemini_out(event, out):
+    if event == "BeforeTool":
+        decision, reason = verdict_of(out)
+        if decision == "allow":
+            return {"decision": "allow", "systemMessage": reason}
+        if decision == "deny":
+            return {"decision": "deny", "reason": reason, "systemMessage": reason}
+        return None  # the protocol has no "ask": silence, and Gemini's own approval rules apply
+    if not out:
+        return None
+    message = out.get("reason") or ((out.get("hookSpecificOutput") or {}).get("additionalContext"))
+    if out.get("decision") == "block":  # AfterTool deny replaces the tool result the model sees
+        return {"decision": "deny", "reason": message}
+    return {"hookSpecificOutput": {"hookEventName": "AfterTool", "additionalContext": message}} if message else None
+
+
+ADAPTERS = {"cursor": (cursor_in, cursor_out), "gemini": (gemini_in, gemini_out)}
+
+
+def foreign_hook(agent, event):
+    global AGENT
+    AGENT = agent
+    to_internal, to_native = ADAPTERS[agent]
+    try:
+        data = json.load(sys.stdin)
+    except ValueError:
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    event = event or data.get("hook_event_name") or ""
+    mapped = to_internal(event, data)
+    out = None
+    if mapped:
+        action, payload = mapped
+        out = judge_payload(action, payload, settings(payload.get("cwd", "")))
+    native = to_native(event, out)
+    if native:
+        print(json.dumps(native))
 
 
 def main():
@@ -1367,6 +1507,8 @@ def main():
     sub = parser.add_subparsers(dest="action")
     for name in ("pre", "post", "scan", "version"):
         sub.add_parser(name)
+    for name in ADAPTERS:
+        sub.add_parser(name).add_argument("event", nargs="?", default="", help="that agent's hook event name")
     for name in ("report", "calibrate", "suggest"):
         p = sub.add_parser(name)
         p.add_argument("--since", type=float, metavar="HOURS")
@@ -1387,6 +1529,8 @@ def main():
     action = args.action or "pre"
     if action in ("pre", "post"):
         hook(action)
+    elif action in ADAPTERS:
+        foreign_hook(action, args.event)
     elif action == "report":
         report(args)
     elif action == "calibrate":

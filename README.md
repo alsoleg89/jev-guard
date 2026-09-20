@@ -391,6 +391,24 @@ for the cache TTL. Nothing else is written anywhere.
 If sending command text to a third party is disqualifying for you, it is disqualifying. The allowlist
 and tripwires work with no key, and `JEV_BOUNCER_URL` can point at a server you run.
 
+## Other agents
+
+The judges, tripwires, settings, cache and log have nothing to do with Claude Code; only the hook
+wire format does. `bouncer.py cursor <event>` and `bouncer.py gemini <event>` are translation
+layers over the same code: they read Cursor's or Gemini CLI's hook JSON, judge it with the same
+functions, and answer in that agent's dialect. Log rows carry an `agent` field; Claude Code rows are
+unchanged.
+
+Ready-to-paste config is in [`adapters/`](adapters), and the protocols, the mapping table and the
+install steps are in [docs/adapters.md](docs/adapters.md).
+
+**Both protocols were read off the vendors' own documentation and neither adapter has been run
+inside Cursor or Gemini CLI by the author.** The offline suite drives each one with a fixture built
+from the documented schema and checks the documented output shape; that is not the same as working.
+Start in `mode: dry`, and read `docs/adapters.md` for the parts the docs do not pin down — Cursor
+does not document its file-edit tool arguments, and it blocks any permission hook that answers
+off-schema, so on Cursor "defer" has to be a permission prompt rather than silence.
+
 ## Limitations
 
 - **Not a security boundary.** See [SECURITY.md](SECURITY.md) for the threat model, including what a

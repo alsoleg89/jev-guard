@@ -49,6 +49,17 @@
   `certutil -decode|-encode|-urlcache`, `net user`, `netsh`, `takeown`, `icacls`. The injection sentinel
   also fires after `Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`, `winget install`,
   `choco install`.
+- Other agents: `bouncer.py cursor <event>` and `bouncer.py gemini <event>` translate Cursor's and
+  Gemini CLI's hook protocols onto the same judges, tripwires, settings, cache and log. No second
+  copy of any rule; the adapters only rename fields and render the verdict in the other agent's
+  dialect. Config snippets in `adapters/`, protocols and caveats in `docs/adapters.md`.
+- Log rows judged through an adapter carry an `agent` field (`cursor`, `gemini`). Claude Code rows
+  are byte-for-byte unchanged and read as `claude` by default.
+- Both protocols were taken from the vendors' own documentation and neither adapter has been run
+  inside Cursor or Gemini CLI. Known gaps, all written down in `docs/adapters.md`: Cursor does not
+  document its file-edit tool arguments (the adapter matches on payload shape, not tool names), a
+  Cursor permission hook that answers off-schema blocks the action so `defer` becomes `ask` there,
+  and Gemini has no `ask` at all so `defer` and `fail: ask` are silence.
 
 ## 0.4.0
 
