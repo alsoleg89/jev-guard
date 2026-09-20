@@ -33,6 +33,22 @@
   (`tripwire in Makefile target deploy: rm -rf`), and that also cancels the trusted-project shortcut, so
   `make test` no longer auto-runs when the test target does `rm -rf /`. New setting `read_referenced`
   (`JEV_BOUNCER_READ_REFERENCED`), default `on`.
+- Windows support for the hooks. `hooks/hooks.json` now runs `hooks/run.cmd`, a polyglot wrapper that
+  cmd.exe and sh each read their own half of; it resolves `py -3`, `python3`, `python` in that order and
+  passes stdin and the exit code straight through. POSIX behaviour is unchanged. Not tested on a Windows
+  machine: the wrapper follows the superpowers polyglot-hooks reference, and the sh half is covered by
+  the offline suite.
+- `bouncer.py` no longer assumes POSIX paths: project containment folds case and separator with
+  `os.path.normcase`, path tripwires accept `\`, secret-path tripwires cover `%USERPROFILE%\.ssh`,
+  `$env:USERPROFILE` and `C:\Users\you\.aws`, system-path tripwires cover `C:\Windows\`,
+  `C:\Program Files\` and `%SystemRoot%`, a command that arrives with CRLF still matches the
+  allowlist, log and config files are read and written as UTF-8, and `chmod` failures are ignored.
+- Windows tripwires: `Remove-Item -Recurse|-Force`, `rd /s`, `del|erase /f|/s|/q`, `format c:`,
+  `diskpart`, `reg add|delete|import`, `schtasks /create`, `Set-ExecutionPolicy`, `Invoke-Expression`
+  and `iex` (which also catches `Invoke-WebRequest … | iex`), `powershell -enc|-EncodedCommand`,
+  `certutil -decode|-encode|-urlcache`, `net user`, `netsh`, `takeown`, `icacls`. The injection sentinel
+  also fires after `Invoke-WebRequest`, `Invoke-RestMethod`, `iwr`, `irm`, `winget install`,
+  `choco install`.
 
 ## 0.4.0
 

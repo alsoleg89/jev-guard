@@ -94,19 +94,21 @@ WEB_TOOLS = ("WebFetch", "WebSearch")
 
 def read_json(path):
     try:
-        loaded = json.loads(path.read_text())
+        loaded = json.loads(path.read_text(encoding="utf-8"))
         return loaded if isinstance(loaded, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
+def under(path, root):
+    """Is path the directory root or inside it? normcase: Windows paths differ in case and separator."""
+    path, root = os.path.normcase(path), os.path.normcase(root.rstrip(os.sep))
+    return bool(root) and (path == root or path.startswith(root + os.sep))
+
+
 def is_trusted(cwd, trusted_projects):
     cwd = os.path.abspath(cwd)
-    for entry in trusted_projects or []:
-        root = os.path.abspath(os.path.expanduser(str(entry))).rstrip(os.sep)
-        if cwd == root or cwd.startswith(root + os.sep):
-            return True
-    return False
+    return any(under(cwd, os.path.abspath(os.path.expanduser(str(entry)))) for entry in trusted_projects or [])
 
 
 def find_up(cwd, name):
@@ -143,7 +145,7 @@ def settings(cwd=""):
     if not policy:
         candidate = find_up(cwd, cfg.get("policy_file") or ".jev-bouncer.md")
         if candidate:
-            policy = candidate.read_text()
+            policy = candidate.read_text(encoding="utf-8", errors="replace")
     cfg["policy_text"] = policy.strip()[:2000]
     for root, patterns in (cfg.get("project_allow") or {}).items():  # written by `bouncer.py suggest --apply`
         if is_trusted(cwd, [root]):
@@ -156,6 +158,19 @@ def settings(cwd=""):
 # ----------------------------------------------------------------------------- tripwires
 # Shapes that are never auto-allowed, whatever Jev says. Jev's known failure mode is a hard zero
 # on the correct answer, so a regex layer keeps the floor. A hit means "defer", never "deny".
+HOMEISH = (r"(?:~|\$HOME|\$env:USERPROFILE|%USERPROFILE%|%HOMEPATH%"
+           r"|/Users/[^/\s]+|/home/[^/\s]+|[A-Za-z]:\\Users\\[^\\\s]+)[/\\]")
+# Windows twins of the shapes below: same worst case, PowerShell or cmd spelling.
+WINDOWS_TRIPWIRES = (
+    r"|\bremove-item\b[^|;&\n]*\s-(?:recurse|force|r\b|f\b)"
+    r"|\b(?:rd|rmdir)\b[^|;&\n]*\s/s\b|\b(?:del|erase)\b[^|;&\n]*\s/(?:f|s|q)\b"
+    r"|\bformat\s+[a-z]:|\bdiskpart\b|\breg\s+(?:add|delete|import)\b"
+    r"|\bschtasks\b[^|;&\n]*\s/create\b|\bset-executionpolicy\b"
+    r"|\binvoke-expression\b|\biex\b"  # covers `Invoke-WebRequest x | iex` and its aliases
+    r"|\b(?:powershell|pwsh)(?:\.exe)?\b[^|;&\n]*\s-e(?:nc(?:odedcommand)?)?\b"
+    r"|\bcertutil\b[^|;&\n]*\s-(?:decode|encode|urlcache)\b"
+    r"|\bnet\s+user\b|\bnetsh\b|\btakeown\b|\bicacls\b"
+)
 BASH_TRIPWIRES = re.compile(
     r"\bsudo\b|\bdoas\b"
     r"|\brm\s+(-\w+\s+)*-\w*[rRfF]"
@@ -166,15 +181,17 @@ BASH_TRIPWIRES = re.compile(
     r"|\bchmod\s+(-R\s+)?[0-7]*777|\bchown\s+-R"
     r"|\bkill(all)?\s+-9|\bpkill\b"
     r"|\b(DROP|TRUNCATE)\s+(TABLE|DATABASE|SCHEMA)\b|\bDELETE\s+FROM\b"
-    r"|(~|\$HOME|/Users/[^/\s]+|/home/[^/\s]+)/\.(ssh|aws|gnupg|netrc|zshrc|bashrc|zprofile|profile|git-credentials|docker/config)\b"
+    r"|" + HOMEISH + r"\.(ssh|aws|gnupg|netrc|zshrc|bashrc|zprofile|profile|git-credentials|docker[/\\]config)\b"
     r"|(^|\s)/etc/|\s/usr/(local/)?bin/"
+    r"|[A-Za-z]:\\(Windows|Program Files( \(x86\))?|ProgramData)\\|%SystemRoot%|%ProgramFiles%"
     r"|\bcrontab\b|\blaunchctl\b|\bdefaults\s+write\b|\bsystemctl\b"
     r"|\b(npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b|\bgh\s+(release|secret|repo\s+delete)\b"
     r"|\b(terraform|pulumi)\s+(apply|destroy)\b|\bkubectl\s+(delete|apply)\b|\bdocker\s+(system\s+prune|rm|rmi|volume\s+rm)\b"
     r"|\beval\b|\bsource\s|(^|[;&|]\s*)\.\s+\S|\bnohup\b|\bat\s+now\b"
     r"|(^|[\s/=])\.env(\.\w+)?\b|\b(credentials|id_rsa|id_ed25519|id_ecdsa|secrets?|kubeconfig|application_default_credentials)\b"
     r"|\.(pem|p12|pfx|npmrc|pypirc|pgpass|my\.cnf|terraformrc)\b|_history\b|/proc/(self|\d+)/environ"
-    r"|(~|\$HOME|/Users/[^/\s]+|/home/[^/\s]+)/\.(kube|config/gh|config/gcloud|azure|docker|terraform\.d|gem/credentials|cargo/credentials)\b|hosts\.yml\b",
+    r"|" + HOMEISH + r"\.(kube|config[/\\]gh|config[/\\]gcloud|azure|docker|terraform\.d|gem[/\\]credentials|cargo[/\\]credentials)\b|hosts\.yml\b"
+    + WINDOWS_TRIPWIRES,
     re.I,
 )
 # Read-only commands the plugin allows on its own: no API call, no latency, no key needed. A command
@@ -196,7 +213,7 @@ LOCAL_ALLOW = re.compile(
     r"|gh\s+(?:pr|issue|run|release|repo)\s+(?:view|list|status|checks|diff)|gh\s+auth\s+status"
     r"|npm\s+(?:ls|list|outdated|view|info|why|explain)|pip3?\s+(?:list|show|freeze|check)|cargo\s+(?:tree|metadata)"
     r"|terraform\s+(?:plan|validate|show|output)|aws\s+s3\s+ls|aws\s+sts\s+get-caller-identity|make\s+-n"
-    r")(?:[ \t]" + SIMPLE_ARGS + r")?[ \t]*$"
+    r")(?:[ \t]" + SIMPLE_ARGS + r")?[ \t\r]*$"
 )
 # Added to the built-in allowlist only inside projects you marked trusted (`bouncer.py trust`).
 TRUSTED_LOCAL_ALLOW = re.compile(
@@ -206,16 +223,17 @@ TRUSTED_LOCAL_ALLOW = re.compile(
     r"|ruff\s+(?:check|format\s+--check)|mypy|black\s+--check|flake8|pylint|tox|jest|vitest|mocha|rspec|dotnet\s+(?:test|build)"
     r")(?:[ \t]" + SIMPLE_ARGS + r")?"
     r"|make(?:[ \t]+(?:test|build|check|lint|-j\d*|-s|-k|-B))*"  # make takes only known targets: `make install` is not routine
-    r")[ \t]*$"
+    r")[ \t\r]*$"
 )
 # Paths whose edits are never auto-allowed: things that execute on their own, or hold secrets.
 PATH_TRIPWIRES = re.compile(
-    r"(^|/)\.(git|ssh|aws|gnupg|kube|docker|husky)(/|$)"
-    r"|(^|/)\.(zshrc|bashrc|bash_profile|zprofile|profile|netrc|env|envrc)$"
-    r"|(^|/)\.github/workflows/|(^|/)\.gitlab-ci\.yml$|(^|/)\.circleci/|(^|/)Jenkinsfile$"
-    r"|(^|/)(Makefile|Dockerfile|docker-compose\.ya?ml|package\.json|pyproject\.toml|setup\.py|setup\.cfg|Cargo\.toml|go\.mod|Gemfile|build\.gradle|pom\.xml)$"
-    r"|(^|/)(CLAUDE|AGENTS)\.md$|(^|/)\.claude/|(^|/)\.cursor/|(^|/)\.vscode/tasks\.json$"
-    r"|^/(etc|usr|bin|sbin|var|Library|System)/|(^|/)crontab",
+    r"(^|[/\\])\.(git|ssh|aws|gnupg|kube|docker|husky)([/\\]|$)"
+    r"|(^|[/\\])\.(zshrc|bashrc|bash_profile|zprofile|profile|netrc|env|envrc)$"
+    r"|(^|[/\\])\.github[/\\]workflows[/\\]|(^|[/\\])\.gitlab-ci\.yml$|(^|[/\\])\.circleci[/\\]|(^|[/\\])Jenkinsfile$"
+    r"|(^|[/\\])(Makefile|Dockerfile|docker-compose\.ya?ml|package\.json|pyproject\.toml|setup\.py|setup\.cfg|Cargo\.toml|go\.mod|Gemfile|build\.gradle|pom\.xml)$"
+    r"|(^|[/\\])(CLAUDE|AGENTS)\.md$|(^|[/\\])\.claude[/\\]|(^|[/\\])\.cursor[/\\]|(^|[/\\])\.vscode[/\\]tasks\.json$"
+    r"|^/(etc|usr|bin|sbin|var|Library|System)/|(^|[/\\])crontab"
+    r"|^[A-Za-z]:[/\\](Windows|Program Files( \(x86\))?|ProgramData)[/\\]",
     re.I,
 )
 # MCP tools whose names promise side effects are never auto-allowed.
@@ -227,7 +245,8 @@ MCP_TRIPWIRES = re.compile(
 NETWORKY = re.compile(
     r"\b(curl|wget|http|https)\b|\bgh\s+(pr|issue|api|repo|run)\b|\bgit\s+(fetch|pull|clone|log)\b"
     r"|\b(npm|pnpm|yarn)\s+(install|i|ci|add)\b|\bpip3?\s+install\b|\bcargo\s+(add|install)\b|\bgo\s+get\b"
-    r"|\bbrew\s+install\b|\bapt(-get)?\s+install\b|\bdocker\s+pull\b|\bpython3?\s+-m\s+pip\s+install\b",
+    r"|\bbrew\s+install\b|\bapt(-get)?\s+install\b|\bdocker\s+pull\b|\bpython3?\s+-m\s+pip\s+install\b"
+    r"|\b(?:invoke-webrequest|invoke-restmethod|iwr|irm)\b|\bwinget\s+install\b|\bchoco\s+install\b",
     re.I,
 )
 
@@ -841,7 +860,7 @@ def judge_edit(tool, tool_input, cwd="", cfg=None):
     path, new, old = edit_parts(tool, tool_input)
     root = os.path.realpath(cwd) if cwd else ""
     absolute = os.path.realpath(os.path.join(cwd, path)) if cwd else os.path.realpath(path)
-    inside = bool(root) and (absolute == root or absolute.startswith(root + os.sep))
+    inside = bool(root) and under(absolute, root)
     shown = os.path.relpath(absolute, root) if inside else absolute
     tripped = (not inside) or bool(PATH_TRIPWIRES.search(shown))  # inside the project, judge the relative path only
     state = with_policy({"policy": EDIT_POLICY, "cwd": cwd, "tool": tool, "path": shown, "inside_project": inside,
@@ -962,10 +981,13 @@ def log(row):
     except OSError:
         pass
     new = not LOG.exists()
-    with LOG.open("a") as handle:
+    with LOG.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps({"ts": time.time(), **row}, ensure_ascii=False) + "\n")
     if new:
-        LOG.chmod(0o600)
+        try:
+            LOG.chmod(0o600)  # Windows only honours the read-only bit; not an error either way
+        except OSError:
+            pass
 
 
 def permission(decision, reason):
@@ -1050,7 +1072,7 @@ def post(payload, cfg):
 
 # ----------------------------------------------------------------------------- CLI
 def load_rows(since_hours=None, project=None):
-    rows = [json.loads(line) for line in LOG.read_text().splitlines() if line.strip()] if LOG.exists() else []
+    rows = [json.loads(line) for line in LOG.read_text(encoding="utf-8").splitlines() if line.strip()] if LOG.exists() else []
     if since_hours:
         cutoff = time.time() - since_hours * 3600
         rows = [r for r in rows if r.get("ts", 0) >= cutoff]

@@ -395,8 +395,25 @@ and tripwires work with no key, and `JEV_BOUNCER_URL` can point at a server you 
 
 - **Not a security boundary.** See [SECURITY.md](SECURITY.md) for the threat model, including what a
   stateful shell, referenced files and a tool result that already reached the model can do.
-- macOS and Linux only. The hook command is `python3 bouncer.py`; Windows needs a `python` alias and a
-  `.cmd` wrapper, which are not included.
+- **Windows: the hooks are wired for it, but nobody has run them there.** Both hooks go through
+  `hooks/run.cmd`, a polyglot wrapper built from the superpowers
+  [polyglot-hooks reference](https://github.com/obra/superpowers/blob/main/docs/windows/polyglot-hooks.md):
+  cmd.exe reads the block at the top of the file, sh reads the half below it, and each picks the first
+  interpreter it finds, `py -3` then `python3` then `python`. Nothing to install beyond Python, no Git Bash, no alias, no config.
+  Verified on macOS: the wrapper runs under `sh`, `zsh` and `bash`, passes stdin, stdout and the exit
+  code through unchanged, and adds no output of its own. **Not verified on Windows** — the author has
+  no Windows machine. The cmd half, Claude Code's expansion of `${CLAUDE_PLUGIN_ROOT}` inside a hook
+  command, and cmd.exe reading a `.cmd` file with Unix line endings are taken from that reference and
+  from the Claude Code docs, not from a run. `bouncer.py` itself is Windows-aware: containment checks
+  fold case and separators (`os.path.normcase`), path tripwires match `\` as well as `/`, secret-path
+  tripwires cover `%USERPROFILE%\.ssh` and `C:\Users\you\.aws`, system-path tripwires cover
+  `C:\Windows\` and `C:\Program Files\`, commands arriving with CRLF still match the allowlist, and
+  the tripwires have PowerShell and cmd twins (`Remove-Item -Recurse|-Force`, `rd /s`, `del /f /s /q`,
+  `format c:`, `diskpart`, `reg add|delete`, `schtasks /create`, `Set-ExecutionPolicy`, `iex` and
+  `Invoke-Expression`, `powershell -enc`, `certutil -decode|-urlcache`, `net user`, `netsh`, `takeown`,
+  `icacls`). Deleting one named file (`Remove-Item foo.txt`) is not a tripwire, exactly as `rm foo.txt`
+  is not. The four slash commands still shell out to `python3` directly, so on Windows they need
+  `python3` on the PATH of Claude Code's Bash tool; the hooks do not.
 - Adds roughly a second to every judged call that misses the allowlist and the cache.
 - Jev is in early access; with no key and the default backend the plugin is an allowlist with tripwires.
   `backend=openai` gives you the full judge path against a local or hosted chat model instead, unmeasured.
