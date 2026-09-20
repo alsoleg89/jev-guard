@@ -4,6 +4,7 @@
 Hooks (dispatched by tool name, see hooks/hooks.json):
   pre        PreToolUse.  Bash commands, Write/Edit/MultiEdit/NotebookEdit, and MCP tool calls are
              judged; the hook answers allow, deny, or nothing (defer to Claude Code's own rules).
+             WebFetch and WebSearch get deterministic URL tripwires instead: no API call, deny or nothing.
   post       PostToolUse. Records which commands actually ran, and scans tool results (web fetches,
              MCP results, network-y Bash output) for prompt injection.
 
@@ -29,6 +30,7 @@ import re
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections import Counter
 from pathlib import Path
@@ -60,6 +62,7 @@ DEFAULTS = {
     "cache_ttl": 21600,        # seconds an identical question is answered from cache; 0 disables
     "guard_edits": "on",
     "guard_mcp": "on",
+    "guard_web": "on",         # deterministic URL/query tripwires on WebFetch and WebSearch; never an API call
     "allow_patterns": [],      # regexes: matching Bash commands are allowed with no API call
     "hold_patterns": [],       # regexes: matching Bash commands are never auto-allowed
     "policy": "",              # plain-language project policy, or put it in .jev-bouncer.md
@@ -75,12 +78,13 @@ ENV_KEYS = {
     "JEV_BOUNCER_TIMEOUT": "timeout", "JEV_BOUNCER_ALLOW_MAX": "allow_max", "JEV_BOUNCER_NOUL_MAX": "noul_max",
     "JEV_BOUNCER_DENY_MIN": "deny_min", "JEV_BOUNCER_INJECT_MIN": "inject_min",
     "JEV_BOUNCER_INJECT_ACTION": "inject_action", "JEV_BOUNCER_SCAN": "scan", "JEV_BOUNCER_SCAN_BASH": "scan_bash",
-    "JEV_BOUNCER_CACHE_TTL": "cache_ttl", "JEV_BOUNCER_EDITS": "guard_edits", "JEV_BOUNCER_MCP": "guard_mcp",
+    "JEV_BOUNCER_CACHE_TTL": "cache_ttl", "JEV_BOUNCER_EDITS": "guard_edits", "JEV_BOUNCER_MCP": "guard_mcp", "JEV_BOUNCER_WEB": "guard_web",
     "JEV_BOUNCER_POLICY": "policy", "JEV_BOUNCER_SCAN_MIN_CHARS": "scan_min_chars", "JEV_BOUNCER_LOCAL_ALLOW": "local_allow",
     "JEV_BOUNCER_BACKEND": "backend", "JEV_BOUNCER_OPENAI_URL": "openai_url",
     "JEV_BOUNCER_OPENAI_MODEL": "openai_model", "JEV_BOUNCER_OPENAI_KEY": "openai_key",
 }
 EDIT_TOOLS = ("Write", "Edit", "MultiEdit", "NotebookEdit")
+WEB_TOOLS = ("WebFetch", "WebSearch")
 
 
 def read_json(path):
@@ -218,6 +222,15 @@ NETWORKY = re.compile(
     r"|\bbrew\s+install\b|\bapt(-get)?\s+install\b|\bdocker\s+pull\b|\bpython3?\s+-m\s+pip\s+install\b",
     re.I,
 )
+
+# URL and query shapes a hijacked agent would use to send data out, or to reach something only this
+# machine can reach. Deterministic: a web call never costs an API call, whatever the key situation.
+HAS_SCHEME = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*:(//|[^0-9/])")  # a scheme, but `localhost:3000` is a host and a port
+BLOB = re.compile(r"[A-Za-z0-9+/=_-]{40,}")   # one opaque token: base64, base64url, hex
+HASHISH = re.compile(r"[0-9a-fA-F]{40,64}")   # ...but a bare hash or hex signature is normal: git sha, sha256, HMAC
+WORDS = re.compile(r"[-_]")                   # ...and so is a slug or a wiki title: short words joined by - or _
+LOCAL_HOST = re.compile(r"localhost|0\.0\.0\.0|::1?|127(\.\d{1,3}){3}|169\.254(\.\d{1,3}){2}|.*\.(internal|local|localhost)", re.I)
+RAW_IP = re.compile(r"(\d{1,3}\.){3}\d{1,3}|[0-9a-fA-F:]*:[0-9a-fA-F:.]*")
 
 # ----------------------------------------------------------------------------- redaction
 # Secret-looking values are replaced before anything is sent to the API or written to the log.
@@ -698,6 +711,63 @@ def judge_mcp(tool, tool_input, cwd="", cfg=None):
             "cached": cached}
 
 
+def opaque_token(values):
+    """The first value that is one long opaque run, which is how a secret leaves through a URL.
+    40 chars of [A-Za-z0-9+/=_-] in a single path segment, param or query word, except:
+      - a bare hash of 40-64 hex digits (a git sha, a sha256 digest, an HMAC signature: everywhere);
+      - words of at most 12 chars joined by - or _ (a blog slug, a wiki title).
+    `+`-as-space and %-escapes are decoded first, so `a+long+sentence` is words, not a blob."""
+    for value in values:
+        for token in str(value).split():
+            if len(token) < 40 or not BLOB.fullmatch(token) or HASHISH.fullmatch(token):
+                continue
+            if max(len(part) for part in WORDS.split(token)) > 12:
+                return token
+    return None
+
+
+def web_rule(tool, target):
+    """The tripwire that this URL or search query hits, named for the reason line, or None."""
+    if redact(target) != target:
+        return "a secret-shaped value in the " + ("query" if tool == "WebSearch" else "URL")
+    if tool == "WebSearch":
+        return "an opaque blob in the search query" if opaque_token([target]) else None
+    parts = urllib.parse.urlsplit(target if HAS_SCHEME.match(target) else "https://" + target)
+    if parts.scheme not in ("http", "https"):
+        return "a {}: URL (only http and https are fetched)".format(parts.scheme)
+    if "@" in parts.netloc:
+        return "credentials in the URL (user:pass@host)"
+    host = parts.hostname or ""
+    try:
+        port = parts.port
+    except ValueError:
+        return "an unparsable port in the URL"
+    if LOCAL_HOST.fullmatch(host):
+        return "a loopback, link-local, metadata or internal host ({})".format(host)
+    if RAW_IP.fullmatch(host):
+        return "a raw IP address host ({})".format(host)
+    if port not in (None, 80, 443):
+        return "a non-standard port ({})".format(port)
+    unquote = urllib.parse.unquote
+    values = [unquote(segment) for segment in parts.path.split("/")]
+    values += [part for pair in urllib.parse.parse_qsl(parts.query, keep_blank_values=True) for part in pair]
+    values.append(unquote(parts.fragment))
+    token = opaque_token(values)
+    return "an opaque {}-char blob in the URL".format(len(token)) if token else None
+
+
+def judge_web(tool, tool_input, cfg):
+    """WebFetch and WebSearch: deterministic tripwires only. Never calls Jev, even when a key is
+    configured, so this tier is free and adds no latency. A hit is a deny; anything else is silence."""
+    if cfg.get("guard_web", "on") == "off":
+        return None
+    target = str(tool_input.get("url") or tool_input.get("query") or "")
+    rule = web_rule(tool, target)
+    if not rule:
+        return None
+    return {"verdict": "deny", "reason": rule, "via": "web_tripwire", "url": redact(target)[:500]}
+
+
 def clip(text, limit=MAX_CHARS, tail=2000):
     """Keep the head and the tail: an injection appended to a long page is the common case."""
     if len(text) <= limit:
@@ -757,6 +827,13 @@ def pre(payload, cfg):
     cwd = payload.get("cwd", "")
     common = {"event": "pre", "tool": tool, "session_id": payload.get("session_id", ""), "project": os.path.basename(cwd),
               "mode": cfg["mode"], "backend": cfg.get("backend", "jev")}
+    enforce = {"on": ("allow", "deny"), "guard": ("deny",)}.get(cfg["mode"], ())
+    if tool in WEB_TOOLS:
+        row = judge_web(tool, tool_input, cfg)
+        if row is None:  # nothing tripped: no decision, no log row, no API call
+            return None
+        log({**common, **row})
+        return permission("deny", "jev-bouncer: {}: {}".format(row["reason"], row["url"][:200])) if "deny" in enforce else None
     if tool == "Bash":
         command = tool_input.get("command") or ""
         if not command.strip():
@@ -771,7 +848,6 @@ def pre(payload, cfg):
     if verdict is None:  # no key and no local verdict: nothing to say
         return None
     log({**common, **verdict, "trusted": cfg["trusted"]})
-    enforce = {"on": ("allow", "deny"), "guard": ("deny",)}.get(cfg["mode"], ())
     if verdict["decision"] not in enforce:
         return None
     return permission(verdict["decision"], reason_line(verdict))

