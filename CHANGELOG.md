@@ -24,6 +24,15 @@
   repository still cannot widen your guard by editing its own config.
 - New `/jev-bouncer:suggest` command: it shows the proposals and asks which to apply; nothing is written
   without you naming a pattern.
+- Commands are judged by what they run, not by their name: `referenced_source` reads the `make` target's
+  recipe (plus one level of prerequisites), the `package.json` script with its `pre`/`post` hooks, the
+  `bash`/`sh`/`zsh`/`source`/`./script.sh` file, a `python` or `node` file argument, a `just` recipe or a
+  `Taskfile` task, and sends a short redacted excerpt to Jev as `runs`. Reads are confined to the project
+  (`..` paths and escaping symlinks are refused), capped at 64 KB per file and ~1500 characters per
+  excerpt. A tripwire inside the excerpt trips the command, with a reason naming the site
+  (`tripwire in Makefile target deploy: rm -rf`), and that also cancels the trusted-project shortcut, so
+  `make test` no longer auto-runs when the test target does `rm -rf /`. New setting `read_referenced`
+  (`JEV_BOUNCER_READ_REFERENCED`), default `on`.
 
 ## 0.4.0
 

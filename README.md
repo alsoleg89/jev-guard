@@ -52,6 +52,13 @@ deny rules are the boundary. jev-bouncer is what you add inside that boundary wh
 
 Each judge answers **allow**, **deny**, or nothing, which leaves the call to Claude Code's own rules.
 
+**What a command runs, not what it is called.** For `make <target>`, `npm run <script>` (and the `yarn`,
+`pnpm`, `just` and `task` equivalents), `bash script.sh`, `./script.sh`, `python x.py` and `node x.js`,
+the recipe, script or first lines of the file are read from the project, capped and redacted, and go to
+the judge with the command. A tripwire in what runs is a tripwire in the command: `make test` does not
+take the trusted-project shortcut when the Makefile's test target does `rm -rf /`. `read_referenced=off`
+turns it off.
+
 **PostToolUse: an injection sentinel.** Web fetches, search results, MCP results, and the output of
 network-y shell commands (`curl`, `git pull`, `npm install`) get `p(injection)`. Above the threshold,
 Claude is told to treat the result as data and to report what it asked for, and Claude Code's own
@@ -273,6 +280,7 @@ project; elsewhere it may set `policy`, `policy_file` and `hold_patterns` only.
 | `guard_mcp` | `JEV_BOUNCER_MCP` | `on` | judge MCP tool calls |
 | `guard_web` | `JEV_BOUNCER_WEB` | `on` | URL tripwires on WebFetch/WebSearch, before the request; never an API call |
 | `local_allow` | `JEV_BOUNCER_LOCAL_ALLOW` | `on` | built-in read-only allowlist |
+| `read_referenced` | `JEV_BOUNCER_READ_REFERENCED` | `on` | read the Makefile target, npm script or script file a command names, and judge that too |
 | `cache_ttl` | `JEV_BOUNCER_CACHE_TTL` | `21600` | seconds an identical question is answered from cache; `0` disables |
 | `allow_patterns` | | `[]` | your regexes: matching commands are allowed with no API call (user config, or trusted project) |
 | `project_allow` | | `{}` | `{absolute project path: [regex, ...]}` in user config, added to `allow_patterns` in that directory tree; `suggest --apply` writes it |
